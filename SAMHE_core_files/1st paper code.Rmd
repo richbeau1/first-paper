@@ -4,7 +4,7 @@ output: html_document
 date: "2026-02-17"
 ---
 ```{r}
-# first check that db_credentials.txt file has the correct passwords and tokens in it, then check the code to make sure the correct root and working directory is specified (if using RStudio, the working directory should be set to the folder containing this script and the other core files, and the code should automatically set the working directory to this folder when run). Then run all chunks in order. The first chunk loads the relational tables, the second chunk loads the SAMHE dataset. The third chunk is for any further processing or analysis you want to do with the data. 
+# first check that db_credentials.txt file has the correct passwords and tokens in it, then check the code to make sure the correct root and working directory is specified (if using RStudio, the working directory should be set to the folder containing this script and the other core files, and the code should automatically set the working directory to this folder when run). Then run all chunks in order. The first chunk loads the relational tables, the second chunk loads the SAMHE dataset. The third chunk is for any further processing or analysis you want to do with the data.
 ```
 
 
