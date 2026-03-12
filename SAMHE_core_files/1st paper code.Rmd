@@ -1,0 +1,468 @@
+---
+title: "1st paper"
+output: html_document
+date: "2026-02-17"
+---
+```{r}
+# first check that db_credentials.txt file has the correct passwords and tokens in it, then check the code to make sure the correct root and working directory is specified (if using RStudio, the working directory should be set to the folder containing this script and the other core files, and the code should automatically set the working directory to this folder when run). Then run all chunks in order. The first chunk loads the relational tables, the second chunk loads the SAMHE dataset. The third chunk is for any further processing or analysis you want to do with the data.
+```
+
+
+```{r}
+
+# loads all the relational tables as first chunk
+setwd('/Users/richardbeaumont/R projects/1st Paper/SAMHE_core_files')
+source("SAMHE_relational_tables.R")
+source("load_external_tables.R")
+
+```
+
+```{r}
+# loads SAMHE data as second chunk 
+
+source("load_SAMHE_dataset.R")
+
+
+```
+
+
+```{r}
+# Figure 1: Map of identified SAMHE sites and corresponding DEFRA sites.
+# • Objective: RQ1 / Objective 1 (describes network and pairing quality).
+# • Stats: Descriptive only – calculate mean, median, range and distribution of SAMHE–AURN distances. 
+
+# PLESE NOTE: This code chunk is for visualisation purposes only and does not perform any statistical analysis. It creates a map showing the locations of the SAMHE sites and their paired AURN sites, with lines connecting each pair and coloured by distance. 
+
+
+##### I NEED TO USE THE CORRECT DATASET WITH THE TIMES AND DATES IN IT, NOT THE FULL SAMHE dataset, TO GET THE CORRECT SITES AND PAIRINGS. I THINK THIS SHOULD BE THE "In_Out_24" dataset, WHICH HAS THE 24-HOUR PAIRINGS AND DISTANCES. (THIS IS ONLY GFOR 2025). 
+
+pacman::p_load(dplyr, sf, ggplot2, rnaturalearth, viridis)
+
+# ---- 1. Prepare pairing table ----
+pairs <- In_Out_24 %>%
+  distinct(SchoolId_short, site, .keep_all = TRUE) %>%
+  select(
+    SchoolId_short,
+    SAMHE_lon = SchoolLongitude,
+    SAMHE_lat = SchoolLatitude,
+    AURN_site = site,
+    AURN_lon  = longitude,
+    AURN_lat  = latitude,
+    distance_km = km_distance_to_AURN
+  ) %>%
+  filter(!is.na(SAMHE_lat), !is.na(AURN_lat))
+
+# ---- 2. Descriptive statistics label ----
+dist_stats <- pairs %>%
+  summarise(
+    n_schools = n_distinct(SchoolId_short),
+    mean_km   = mean(distance_km, na.rm = TRUE),
+    median_km = median(distance_km, na.rm = TRUE),
+    min_km    = min(distance_km, na.rm = TRUE),
+    max_km    = max(distance_km, na.rm = TRUE)
+  )
+
+stats_label <- paste0(
+  "n = ", dist_stats$n_schools, "\n",
+  "Mean = ", round(dist_stats$mean_km, 1), " km\n",
+  "Median = ", round(dist_stats$median_km, 1), " km\n",
+  "Range = ", round(dist_stats$min_km, 1), "–", round(dist_stats$max_km, 0), " km"
+)
+
+# ---- 3. Convert to sf objects ----
+samhe_sf <- st_as_sf(pairs,
+                     coords = c("SAMHE_lon","SAMHE_lat"),
+                     crs = 4326, remove = FALSE)
+
+aurn_sf  <- st_as_sf(pairs,
+                     coords = c("AURN_lon","AURN_lat"),
+                     crs = 4326, remove = FALSE)
+
+lines_sf <- st_as_sf(
+  pairs %>%
+    rowwise() %>%
+    mutate(geometry = st_sfc(
+      st_linestring(matrix(c(SAMHE_lon, SAMHE_lat,
+                             AURN_lon,  AURN_lat),
+                           ncol = 2, byrow = TRUE)),
+      crs = 4326)) %>%
+    ungroup(),
+  crs = 4326
+)
+
+# ---- 4. UK basemap ----
+uk <- rnaturalearth::ne_states(country = "United Kingdom",
+                               returnclass = "sf")
+
+# ---- 5. Plot ----
+ggplot() +
+  geom_sf(data = uk,
+          fill = "white",
+          colour = "grey40",
+          linewidth = 0.3) +
+  geom_sf(data = lines_sf,
+          aes(color = distance_km),
+          linewidth = 0.25,
+          alpha = 0.6) +
+  geom_sf(data = aurn_sf,
+          aes(fill = distance_km),
+          shape = 21,
+          colour = "black",
+          size = 2.2,
+          stroke = 0.3) +
+  geom_sf(data = samhe_sf,
+          aes(shape = "SAMHE site"),
+          colour = "red",
+          size = 1.2) +
+  coord_sf(xlim = c(-8.5, 2.5),
+           ylim = c(49.5, 60.9),
+           clip = "off") +
+  scale_shape_manual(name = "Site type",
+                     values = c("SAMHE site" = 16)) +
+  scale_color_viridis_c(name = "Distance to AURN (km)") +
+  scale_fill_viridis_c(name = "Distance to AURN (km)") +
+  guides(
+    shape = guide_legend(order = 1),
+    color = guide_colorbar(order = 2),
+    fill  = guide_colorbar(order = 2)
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(size = 11),
+    legend.text  = element_text(size = 11),
+    plot.margin = margin(5.5, 80, 5.5, 5.5)
+  ) +
+  annotate("text",
+           x = 2.7,
+           y = 52.5,
+           label = stats_label,
+           hjust = 0,
+           vjust = 1,
+           size = 3.5)
+```
+
+```{r}
+
+# this is same as the map above with the colour of SAMHE signifying the distance to the paired AURN site, and a label with the descriptive statistics of the distances.
+
+
+pacman::p_load(dplyr, sf, ggplot2, rnaturalearth)
+
+# ---- 1. Prepare pairing table ----
+pairs <- In_Out_24 %>%
+  distinct(SchoolId_short, site, .keep_all = TRUE) %>% 
+  select(
+    SchoolId_short,
+    SAMHE_lon = SchoolLongitude,
+    SAMHE_lat = SchoolLatitude,
+    AURN_site = site,
+    AURN_lon  = longitude,
+    AURN_lat  = latitude,
+    distance_km = km_distance_to_AURN
+  ) %>%
+  filter(!is.na(SAMHE_lat), !is.na(AURN_lat), !is.na(distance_km)) 
+
+# ---- 2. Descriptive statistics label ----
+dist_stats <- pairs %>%
+  summarise(
+    n_schools = n_distinct(SchoolId_short),
+    mean_km   = mean(distance_km, na.rm = TRUE),
+    median_km = median(distance_km, na.rm = TRUE),
+    min_km    = min(distance_km, na.rm = TRUE),
+    max_km    = max(distance_km, na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+stats_label <- paste0(
+  "n = ", dist_stats$n_schools, "\n",
+  "Mean = ", round(dist_stats$mean_km, 1), " km\n",
+  "Median = ", round(dist_stats$median_km, 1), " km\n",
+  "Range = ", round(dist_stats$min_km, 1), "–", round(dist_stats$max_km, 0), " km"
+)
+
+# ---- 3. Convert to sf objects ----
+samhe_sf <- st_as_sf(pairs, coords = c("SAMHE_lon", "SAMHE_lat"),
+                     crs = 4326, remove = FALSE)
+
+aurn_sf  <- st_as_sf(pairs, coords = c("AURN_lon", "AURN_lat"),
+                     crs = 4326, remove = FALSE)
+
+lines_sf <- st_as_sf(
+  pairs %>%
+    rowwise() %>%
+    mutate(geometry = st_sfc(
+      st_linestring(matrix(c(SAMHE_lon, SAMHE_lat,
+                             AURN_lon,  AURN_lat),
+                           ncol = 2, byrow = TRUE)),
+      crs = 4326)) %>%
+    ungroup(),
+  crs = 4326
+)
+
+# ---- 4. UK basemap ----
+uk <- rnaturalearth::ne_states(country = "United Kingdom", returnclass = "sf") 
+
+# ---- 5. Plot ----
+ggplot() +
+  # slightly darker basemap so points pop
+  geom_sf(data = uk, fill = "grey95", colour = "grey50", linewidth = 0.3) +
+
+  # keep link lines subtle (optional)
+  geom_sf(data = lines_sf, colour = "grey65", linewidth = 0.25, alpha = 0.5) +
+
+  # AURN sites as hollow circles
+  geom_sf(data = aurn_sf, shape = 21, fill = "white", colour = "black",
+          size = 1.0, stroke = 0.3) + 
+
+  # SAMHE sites coloured by distance (high contrast)
+  #geom_sf(data = samhe_sf,
+          #aes(color = distance_km),
+          #shape = 16,#
+          #size = 1.0) +
+  # add an outline by drawing the points twice: black underneath, coloured on top
+
+geom_sf(data = samhe_sf, colour = "black", shape = 16, size = 1.5, alpha = 0.5) +
+geom_sf(data = samhe_sf, aes(color = distance_km), shape = 16, size = 1.3, alpha = 0.5) +
+
+  coord_sf(xlim = c(-8.5, 2.5),
+           ylim = c(49.5, 60.9),
+           clip = "off") + 
+  
+scale_color_viridis_c(
+  trans = "log10",
+  option = "viridis",
+  breaks = c(1, 10, 100),
+  labels = c("1", "10", "100 km"),
+  name = "Distance to nearest AURN (km)"
+) +
+  # high-contrast distance palette
+  #scale_color_distiller(
+ #   palette = "RdYlGn", 
+ #   direction = -1,
+ #   trans = "log10",
+ #    breaks = c(1, 10, 100),
+ # labels = c("1", "10", "100 km"),
+ # name = "Distance to nearest AURN (km)"
+#) +
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 9),
+    plot.margin = margin(5.5, 95, 5.5, 5.5)
+  ) +
+
+  # stats block in right margin under legend
+  annotate("text",
+           x = 3.7,
+           y = 53.7,
+           label = stats_label,
+           hjust = 0,
+           vjust = 1,
+           size = 3.5)+
+# blue dot
+
+ annotate("point",
+         x = 3.7,
+         y = 54,
+         shape = 21,
+         colour = "black",
+         fill = "white",
+         size = 2.5,
+         stroke = 0.8) +
+         
+
+  
+
+# label next to dot
+ annotate("text",
+         x = 3.85,
+         y = 54,
+         label = "AURN sites",
+         hjust = 0,
+         size = 3.5)
+```
+
+
+```{r}
+# Figure 2: Scatter plot of annual mean indoor PM2.5 on the y-axis and annual mean outdoor (this isn't on the list but seemed a good plot to produce as a first step to check the data and pairings are working as expected). 
+
+library(dplyr) 
+library(lubridate)
+library(openair) 
+
+df_hourly <- In_Out_24 %>%
+  mutate(date = floor_date(DateTime, "hour")) %>%
+  group_by(date) %>%
+  summarise(
+    indoor  = mean(pm02,  na.rm = TRUE),
+    outdoor = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+timeVariation(
+  df_hourly,
+  pollutant = c("indoor", "outdoor"),
+  normalise = TRUE,
+  statistic = "median",
+  main = "Hourly MEDIAN of all schools 24hrs and nearest AURN station (2023-01-01 00:00:00 GMT 2026-02-23 23:00:00 GMT)"
+)
+```
+
+
+
+
+
+
+
+
+```{r}
+
+# Figure 2: Scatter plot of annual mean indoor PM2.5 on the y-axis and annual mean outdoor
+# PM2.5 on the x-axis.
+# • Objective: RQ1 / Objective 1 (baseline exposure and infiltration).
+# • Stats: Pearson (or Spearman if non-normal) correlation between indoor and outdoor PM₂.₅.
+# • Simple linear regression: indoor PM₂.₅ ~ outdoor PM₂.₅
+
+
+pacman::p_load(dplyr,openair,tidyverse)
+
+# ---- 1. Prepare 2025 annual means ----
+df_annual <- In_Out_24 %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year == 2025) %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(`pm02`, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(indoor_pm25), !is.na(outdoor_pm25))
+
+# ---- 2. Scatter with regression + correlation ----
+library(openair)
+
+# Calculate correlation + regression manually
+cor_val <- cor(df_openair$pm25_outdoor,
+               df_openair$pm25_indoor,
+               method = "pearson",
+               use = "complete.obs")
+
+lm_fit <- lm(pm25_indoor ~ pm25_outdoor, data = df_openair)
+
+stats_label <- paste0(
+  "n = ", nrow(df_openair), "\n",
+  "r = ", round(cor_val, 2), "\n",
+  "R² = ", round(summary(lm_fit)$r.squared, 2), "\n",
+  "Indoor = ",
+  round(coef(lm_fit)[1], 2), " + ",
+  round(coef(lm_fit)[2], 2),
+  " × Outdoor"
+)
+
+scatterPlot(df_annual,
+            x = "outdoor_pm25",
+            y = "indoor_pm25",
+            linear = TRUE,
+            cor = TRUE,
+            cex = 0.5,
+            xlim = c(0, 20),
+            ylim = c(0, 20),
+            main = "Indoor vs Outdoor PM2.5 (2025 annual means)")
+
+
+```
+
+
+
+
+```{r}
+
+# Figure 3: I/O annual mean scatterplot (faceted 2023-24 2024-25), different colours for school region, etc?)
+#• RQ / Objective: RQ1 / Objective 1 (infiltration behaviour and its variability).
+#• Stats: Pearson/Spearman correlation between I/O ratio and outdoor PM₂.₅.
+#• Optionally compare I/O distributions by region (ANOVA or Kruskal–Wallis, depending on normality).
+
+library(dplyr)
+library(openair)
+
+# Annual means per school (2025) + I/O ratio
+df_annual_io <- In_Out_24 %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year == 2025) %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02,    na.rm = TRUE),   # SAMHE indoor PM2.5
+    outdoor_pm25 = mean(`pm2.5`, na.rm = TRUE),   # AURN outdoor PM2.5
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(indoor_pm25), is.finite(outdoor_pm25), outdoor_pm25 > 0) %>%
+  mutate(io_ratio = indoor_pm25 / outdoor_pm25)
+
+# I/O vs outdoor with a non-linear smoother (loess)
+scatterPlot(
+  df_annual_io,
+  x = "outdoor_pm25",
+  y = "io_ratio",
+  cex = 0.5,
+  smooth = TRUE,          # non-linear loess line
+  linear = FALSE,
+  xlab = "Annual mean outdoor PM2.5 (µg m-3)",
+  ylab = "Annual mean I/O ratio (indoor/outdoor)",
+  main = "Annual mean I/O ratio vs outdoor PM2.5 (2025)"
+)
+```
+
+```{r}
+# the above plot is extra, here are the faceted plots by season, which is the main focus of the paper. 
+library(dplyr)
+library(lubridate)
+
+df_seasonal <- In_Out_24 %>%
+  mutate(
+    date = as.Date(DateTime),
+    Year = year(date),
+    Month = month(date),
+    Season = case_when(
+      Month %in% c(12,1,2)  ~ "Winter",
+      Month %in% c(3,4,5)   ~ "Spring",
+      Month %in% c(6,7,8)   ~ "Summer",
+      Month %in% c(9,10,11) ~ "Autumn"
+    )
+  ) %>%
+  filter(Year == 2025) %>%
+  group_by(SchoolId_short, Season) %>%
+  summarise(
+    indoor  = mean(pm02, na.rm = TRUE),
+    outdoor = mean(`pm2.5`, na.rm = TRUE),
+    IO_ratio = indoor / outdoor,
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(IO_ratio), is.finite(IO_ratio))
+
+
+# Scatter plot of I/O ratio vs outdoor PM2.5, faceted by season 
+
+library(ggplot2)
+
+ggplot(df_seasonal, aes(x = outdoor, y = IO_ratio)) +
+  #geom_point(alpha = 0.6) +
+  geom_point(colour = "red", alpha = 0.4, size = 1.2) +
+  geom_smooth(method = "lm", se = TRUE) +
+  facet_wrap(~ Season, scales = "free_x") +
+  labs(
+    x = "Seasonal mean outdoor PM2.5 (µg m-3)",
+    y = "Seasonal mean I/O ratio"
+  ) +
+  theme_minimal()
+```
+```{r}
+# this is for school region comparisons of I/O ratio.
+```
+
