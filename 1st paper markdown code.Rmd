@@ -1,0 +1,655 @@
+---
+title: "1st paper markdown"
+output: html_document
+date: "2026-02-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # Set to FALSE to hide code in the final document ?
+```
+
+```{r}
+
+# ```{r set passwords, path }
+
+# 1st connect to x drive and load passwords from samhe_passwords.r - this file should be in the same folder as this .Rmd file and should contain the following lines (with your own passwords filled in):
+
+rm(list = ls())  #unload all variables so we are working with a clean environment (if you need to)
+
+path <- "X:/vouriot_group/Shared/IAQ/SAMHE/training" # SET THIS to the file path which contains samhe_functions.r and 
+```
+
+
+
+```{r}
+
+# this acesses the SAMHE database and loads the views we need for the analysis - it also does some basic cleaning to make sure the data is in a usable format. You will need to have the ODBC driver 18 for SQL Server installed to run this code. 
+
+get_current_script_path <- function() {
+  # 1. Called via Rscript or commandArgs
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- "--file="
+  path_from_args <- sub(file_arg, "", args[grep(file_arg, args)])
+  if (length(path_from_args) == 1 && nzchar(path_from_args)) {
+    return(normalizePath(path_from_args))
+  }
+  
+  # 2. Called via source() [works in most cases]
+  if (!is.null(sys.frames()[[1]]$ofile)) {
+    return(normalizePath(sys.frames()[[1]]$ofile))
+  }
+  
+  # 3. RStudio interactive
+  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+    ctx_path <- rstudioapi::getActiveDocumentContext()$path
+    if (nzchar(ctx_path)) {
+      return(normalizePath(ctx_path))
+    }
+  }
+  
+  return(NA_character_)
+}
+
+script_path <- get_current_script_path()
+if (!is.na(script_path)) {
+  setwd(dirname(script_path))
+}
+
+path <- dirname(script_path)
+
+library("pacman")
+pacman::p_load(dplyr, DBI, odbc, tidyr, stringr, PostcodesioR)
+
+## Load username/pwd
+cred_file <- "db_credentials.txt"
+creds <- readLines(cred_file)
+creds <- trimws(creds)
+creds <- setNames(
+  sub("^[^=]+=", "", creds),
+  sub("=.*$", "", creds)
+)
+
+uid <- creds[["UID"]]
+pwd <- creds[["PWD"]]
+
+
+## Make connection to relational db - odbc driver 18 must be installed
+#--- Connect to relational database ---
+con_relational <- dbConnect(
+  odbc(),
+  Driver                  = "ODBC Driver 18 for SQL Server",
+  Server                  = "sql-imp-samhe-prod.database.windows.net",
+  Database                = "sqldb-samhe-prod",
+  UID                     = uid,
+  PWD                     = pwd,
+  Port                    = 1433,
+  Encrypt                 = "yes",
+  TrustServerCertificate  = "no",
+  Authentication          = "SqlPassword"
+)
+
+#--- Safe read helper ---
+safe_read <- function(con, table) {
+  tryCatch(
+    dbReadTable(con, table),
+    error = function(e) {
+      message(paste("Falling back to dbGetQuery for", table))
+      dbGetQuery(con, paste0("SELECT * FROM ", table)) 
+    }
+  ) # First try dbReadTable, if it fails (e.g. due to permissions), fall back to dbGetQuery 
+}
+
+postcode_format <- function(x) {
+  if (is.na(x) || x == "") return(NA_character_)
+  x <- toupper(trimws(x))                     # remove spaces and capitalise
+  x <- gsub("[^A-Z0-9]", "", x)               # remove any non-alphanumeric
+  # insert a space before the last 3 characters (if not already there)
+  formatted <- sub("([A-Z0-9]+)([0-9][A-Z]{2})$", "\\1 \\2", x)
+  # ensure valid length (5–8 chars inc. space)
+  if (nchar(formatted) < 5 || nchar(formatted) > 8) return(NA_character_)
+  return(formatted)
+}
+
+#--- Load views ---
+research_schools                <- safe_read(con_relational, "vw_Research_Schools")
+research_monitors               <- safe_read(con_relational, "vw_Research_Monitors")
+research_activities             <- safe_read(con_relational, "vw_Research_Activities")
+research_activity_steps         <- safe_read(con_relational, "vw_Research_ActivitySteps")
+research_user_scores            <- safe_read(con_relational, "vw_Research_UserScores")
+research_school_establishments  <- safe_read(con_relational, "vw_Research_SchoolEstablishments")
+research_SchoolUsers            <- safe_read(con_relational, "vw_Research_SchoolUsers")
+research_UserAchievementProgresses <- safe_read(con_relational, "vw_Research_UserAchievementProgresses")
+research_Rooms                  <- safe_read(con_relational, "vw_Research_Rooms")
+research_monitor_locs           <- safe_read(con_relational, "vw_Research_MonitorLocationHistories")
+monitor_requests <- safe_read(con_relational,"vw_Research_RequestMonitorSubmissions")
+
+
+research_activity_steps_progress <- dbGetQuery(
+  con_relational,
+  "
+  SELECT 
+    Id, 
+    ActivityId, 
+    SchoolUserId, 
+    ActivityStatus, 
+    ActiveStepId, 
+    DateCreated, 
+    DateModified, 
+    CAST(StepsState AS nvarchar(max))   AS StepsState,
+    CAST(PreviousSteps AS nvarchar(max)) AS PreviousSteps,
+    AttemptNo
+  FROM vw_Research_ActivityUserProgresses
+  "
+)
+
+#--- Define ID consistency ---
+cat("Defining SchoolId_long and SchoolId_short\n")
+
+names(monitor_requests)[names(monitor_requests) == "SchoolId"] <- "SchoolId_long"
+names(research_schools)[names(research_schools) == "SchoolId"] <- "SchoolId_long"
+names(research_SchoolUsers)[names(research_SchoolUsers) == "SchoolId"] <- "SchoolId_short"
+names(research_monitors)[names(research_monitors) == "SchoolId"] <- "SchoolId_short"
+names(research_school_establishments)[names(research_school_establishments) == "Name"] <- "SchoolName"
+names(research_school_establishments)[names(research_school_establishments) == "Postcode"] <- "SchoolAddressPostCode"
+
+#--- Create monitor request dataframe ---
+df_monitor_requests <- monitor_requests %>%
+  select(
+    SchoolId_long,
+    SchoolName,
+    SchoolFundingType,
+    SchoolType,
+    SchoolSize,
+    SchoolAddressPostCode,
+    DateCreated_MonitorRequest = DateCreated,
+    DateValidated_MonitorRequest = DateValidated,
+    SchoolBuildingAge,
+    EstablishmentId,
+    ConsentToContact
+  ) %>%
+  mutate(EstablishmentId = strtoi(EstablishmentId))
+
+df_research_monitors <- research_monitors%>%select(SchoolId_short, MonitorReferenceId, DateCreated_Monitor = DateCreated, DateActivated_Monitor = DateActivated, Location_Monitor = Location, RoomId )
+
+df_research_schools <- research_schools%>%select(SchoolId_short = Id, SchoolId_long,  DateCreated_Schools = DateCreated, SchoolStatus, HasAccessToWebApp, MonitoringType)
+
+df_school_monitors<-  left_join(left_join(df_monitor_requests, df_research_schools, by = "SchoolId_long") , df_research_monitors, by = "SchoolId_short") %>%filter(!(is.na(MonitorReferenceId)))#Only those schools which have monitors
+
+
+df_school_monitors$SchoolAddressPostCode <- vapply(
+  df_school_monitors$SchoolAddressPostCode,
+  postcode_format,
+  character(1)
+)
+
+rm(df_research_schools, df_research_monitors, monitor_requests)
+```
+
+```{r}
+#Load_external_tables.R
+
+#This will load information about 
+#- Rural Urban classification 
+#- GIAS data (education phase, percentage free school meals)
+#- LSOA data and linked IMD_decile 
+#- EPC data from EPC certificates
+#and create a new dataframe called df_school_chars, which is df_school_monitors with the additional columns from above data 
+
+##Load external tables for local authority, IMD, urban and Rural, GIAS
+#to be run after SAMHE essentials
+pacman::p_load(Microsoft365R)
+
+df_school_chars <- df_school_monitors
+
+# path = "C:/SAMHE"
+#path_external <- paste0(path,"/external_tables")
+
+# i made the files local as i couldn't link to the imperial one drive 
+path <- file.path(getwd(), "SAMHE_core_files") 
+path_external <- file.path(path, "external_tables")
+
+
+postcode_nations <- read.csv(paste0(path_external, '/postcode_nations.csv')) #Load postcode nation list
+## Connect to shared onedrive:
+
+
+df_school_chars <- df_school_monitors%>% mutate(pcode_region = if_else (
+  grepl("^[0-9]{1,}$", (substr(SchoolAddressPostCode, 2, 2))),  #check if 2nd pcode char is a number
+  (substr(SchoolAddressPostCode, 1, 1)),
+  (substr(SchoolAddressPostCode, 1, 2)))
+)%>% left_join(postcode_nations, by = c("pcode_region" = "Postcode.area"))%>%select(-Postcode.area.name, pcode_region)
+
+##===========================================================================================================================================================
+cat("\nLoading IMD and Local authority files")
+###IMD from: https://data.cdrc.ac.uk/dataset/index-multiple-deprivation-imd/resource/cdrc-harmonised-imd-2019
+#Connect postcode to LSOA (lower Super Output area) from: https://geoportal.statistics.gov.uk/datasets/e7824b1475604212a2325cd373946235/about
+
+LSOA_file <- list.files(paste0(path_external, "/LSOA"))
+IMD_file <- list.files(paste0(path_external, "/uk_imd"))
+
+#RUC are for england and wales only
+RUC_file <-list.files(paste0(path_external, "/rural_urban_classification"))
+
+df_LSOA <- read.csv(paste0(path_external, "/LSOA/", LSOA_file)) %>%select(Postcode = pcds, LSOA = lsoa11cd, OutputArea = oa11cd)
+df_school_chars <- df_school_chars %>% left_join(df_LSOA, by = c("SchoolAddressPostCode" = "Postcode" ))
+
+df_IMD <- read.csv(paste0(path_external, "/uk_imd/", IMD_file)) %>%select(LSOA, LocalAuthority = LANAME, IMD_decile = SOA_decile)
+df_school_chars <- df_school_chars %>% left_join(df_IMD, by = "LSOA")
+
+
+#Merge RUC data by country
+df_RUC <-  read.csv(paste0(path_external, "/rural_urban_classification/", RUC_file[[1]])) %>%select(OutputArea = OA11CD, RUC_code = RUC11CD, RUC = RUC11)
+
+
+df_RUC_scot <- read.csv(paste0(path_external, "/rural_urban_classification/", RUC_file[[2]])) %>%select(OutputArea = OUTPUTAREA, RUC_code = UR2FOLD)%>%
+  mutate(RUC = case_when(RUC_code == 1 ~ "Urban Scotland", 
+                         RUC_code ==2 ~ "Rural Scotland"))
+
+df_RUC_NI <- read.csv(paste0(path_external, "/rural_urban_classification/", RUC_file[[3]])) %>%
+  select(OutputArea = SA2011_Code, RUC_code = "Rural_Urban")%>%
+  mutate(RUC = case_when(RUC_code== "Rural" ~ "Rural NI", 
+                         ((RUC_code =="Urban")|(RUC_code =="Mixed urban/rural")) ~ "Urban NI"))
+
+
+df_school_chars_NI <- df_school_chars %>%filter(Country == "Northern Ireland")%>%
+  left_join(df_RUC_NI, by = "OutputArea") 
+
+df_school_chars_CI <- df_school_chars %>%filter(Country == "Channel Islands")
+
+df_school_chars_CI$RUC_code <- "channel island"
+df_school_chars_CI$RUC <- "Rural"
+
+
+df_school_chars_eng_wal <- df_school_chars %>%filter((Country == "England") | (Country == "Wales"))%>%
+  left_join(df_RUC, by = "OutputArea") 
+
+df_school_chars_scot <- df_school_chars %>%filter(Country == "Scotland")%>%
+  left_join(df_RUC_scot, by = "OutputArea")
+
+
+#Do this last when I've got a clearer idea of main monitor stats
+
+#rm(df_school_chars_eng_wal, df_school_chars_scot, df_school_chars_NI, df_school_monitors_CI)
+##BELOW HERE IS FOR ENGLAND AND WALES ONLY
+
+##=========================================== School Education level + FSM   ================================================================
+#Pull data from local GIAS download for England and Wales Schools
+cat("\nLoading GIAS data for England and Wales Schools")
+cat("\nScottish NI equivalent not yet incorporated") #https://www.gov.scot/publications/school-level-summary-statistics/
+GIAS_file <- list.files(paste0(path_external, "/GIAS"))
+#filter what I think are useful GIAS things but can add later
+df_GIAS <- read.csv(paste0(path_external, "/GIAS/", GIAS_file)) %>%
+  select(EstablishmentId = URN, SchoolName = EstablishmentName, EstablishmentType = TypeOfEstablishment..name., EstablishmentTypeGroup = EstablishmentTypeGroup..name. , EducationPhase = PhaseOfEducation..name., Gender = Gender..name.,  PercentageFSM, Boarders = Boarders..name., NurseryProvision = NurseryProvision..name., SixthForm = OfficialSixthForm..name., ReligiousCharacter = ReligiousCharacter..name. , SchoolCapacity, NumberOfPupils, Town, SchoolAddressPostCode = Postcode, OfstedRating = OfstedRating..name., OpenOrClosed = EstablishmentStatus..name.)
+#Incorporate data to df_school_chars and df_users
+
+## Scotland school stats
+Scotland_file <- list.files(paste0(path_external, "/scottish_school_stats"))
+df_scot_schools <- read.csv(paste0(path_external, "/scottish_school_stats/", Scotland_file))%>%
+  select(EstablishmentId = SeedCode,  EducationPhase = SchoolType, PercentageFSM)
+
+#NI_file
+NI_file <- list.files(paste0(path_external, "/NI_school_stats"))
+df_NI_schools <- read.csv(paste0(path_external, "/NI_school_stats/", NI_file))%>%
+  select(EstablishmentId = DE.ref,  EducationPhase = school.type, PercentageFSM)
+
+#df_school_chars_eng_wal <- df_school_chars_eng_wal %>%left_join(df_GIAS%>%select(EstablishmentId, EducationPhase, PercentageFSM), by = "EstablishmentId")
+df_school_chars_scot <- df_school_chars_scot %>%left_join(df_scot_schools%>%select(EstablishmentId, EducationPhase, PercentageFSM), by = "EstablishmentId")
+df_school_chars_NI <- df_school_chars_NI %>%left_join(df_NI_schools%>%select(EstablishmentId, EducationPhase, PercentageFSM), by = "EstablishmentId")
+
+df_school_chars_CI$EducationPhase <- NA
+df_school_chars_CI$PercentageFSM <- NA
+
+#df_school_chars <- rbind(df_school_chars_eng_wal, df_school_chars_scot, df_school_chars_NI,df_school_chars_CI)
+
+df_school_chars_eng_wal_2 <- df_school_chars_eng_wal %>%left_join(df_GIAS%>%select(EstablishmentId, EducationPhase, PercentageFSM, SchoolCapacity, NumberOfPupils), by = "EstablishmentId")
+
+df_school_chars <- merge(df_school_chars_eng_wal_2, df_school_chars_scot, all = TRUE)%>%merge(df_school_chars_NI, all = TRUE)%>%
+  merge(df_school_chars_CI, all = TRUE)
+
+##Load EPC certificates
+
+EPC_file <- list.files(paste0(path_external, "/EPC_certs"))
+
+df_EW_EPC_schools <- read.csv(paste0(path_external, "/EPC_certs/", EPC_file[[1]]))%>% 
+  select(POSTCODE,EPCBand = ASSET_RATING_BAND, EPCAssetRating = ASSET_RATING, MainHeatingFuel = MAIN_HEATING_FUEL, FloorArea = FLOOR_AREA, 
+       BuildingEnvironment = BUILDING_ENVIRONMENT)
+
+df_scot_EPCs <- read.csv(paste0(path_external, "/EPC_certs/", EPC_file[[2]]))%>% 
+  select(POSTCODE,EPCBand = ASSET_RATING_BAND, EPCAssetRating = ASSET_RATING, MainHeatingFuel = MAIN_HEATING_FUEL, FloorArea = FLOOR_AREA,
+         BuildingEnvironment = BUILDING_ENVIRONMENT)
+
+combined_EPC <- rbind(df_EW_EPC_schools, df_scot_EPCs)
+
+postcode_heating_fuel <- combined_EPC %>% group_by(POSTCODE) %>%
+  mutate(unique_fuels = n_distinct(MainHeatingFuel))%>% filter(unique_fuels <2)%>%
+  select(POSTCODE, MainHeatingFuel)%>%distinct()
+
+postcode_EPC_band <- combined_EPC %>% group_by(POSTCODE) %>%
+  mutate(unique_bands = n_distinct(EPCBand))%>% filter(unique_bands <2)%>%
+  select(POSTCODE, EPCBand)%>%distinct()
+
+postcode_Floor_Area <- combined_EPC %>% group_by(POSTCODE) %>%
+  mutate(unique_area = n_distinct(FloorArea))%>% filter(unique_area <2)%>%
+  select(POSTCODE, FloorArea)%>%distinct()
+
+postcode_building_environment <- combined_EPC %>% group_by(POSTCODE) %>%
+  mutate(unique_be = n_distinct(BuildingEnvironment))%>% filter(unique_be <2)%>%
+  select(POSTCODE, BuildingEnvironment)%>%distinct()
+
+df_school_chars <- df_school_chars %>% left_join(postcode_EPC_band, 
+                                                           by = c("SchoolAddressPostCode" = "POSTCODE")) %>% 
+  left_join(postcode_heating_fuel, by = c("SchoolAddressPostCode" = "POSTCODE"))%>%
+  left_join(postcode_Floor_Area, by = c("SchoolAddressPostCode" = "POSTCODE"))%>%
+  left_join(postcode_building_environment, by = c("SchoolAddressPostCode" = "POSTCODE"))
+
+df_school_chars <- df_school_chars %>% mutate(FractionalOccupancy = NumberOfPupils/SchoolCapacity)
+
+
+rm(df_school_chars_eng_wal, df_school_chars_scot, df_school_chars_NI, df_school_chars_CI, df_school_chars_eng_wal_2)
+
+#%>%
+ # select(EstablishmentId = SeedCode,  EducationPhase = SchoolType, PercentageFSM)
+
+#### England school funding data
+
+
+cat("loading funding data for english schools")
+
+########################
+# Add long lats to df_school_chars
+library(dplyr)
+library(purrr)
+library(tibble)
+library(PostcodesioR)
+
+# Clean function: uppercase, trim, keep only alphanumerics and single spaces
+clean_postcode <- function(x) {
+  x <- toupper(trimws(x))
+  x <- gsub("[^A-Z0-9 ]", "", x)      # remove non-alphanumerics
+  x <- gsub("\\s+", " ", x)           # collapse multiple spaces to one
+  x
+}
+
+df_school_chars <- df_school_chars %>%
+  mutate(pc_clean = clean_postcode(SchoolAddressPostCode),
+         valid    = map_lgl(pc_clean, postcode_validation))  # TRUE/FALSE validity
+# postcode_validation checks validity  ^1^  ^2^
+
+library(purrr)
+library(tibble)
+library(PostcodesioR)
+
+coords <- map_df(df_school_chars$SchoolAddressPostCode, function(pc_raw) {
+  pc <- clean_postcode(pc_raw)
+  res <- suppressWarnings(tryCatch(postcode_lookup(pc), error = function(e) NULL))  #  ^1^  ^2^ 
+  if (is.null(res) || all(is.na(res$latitude))) {
+    term <- suppressWarnings(tryCatch(terminated_postcode(pc), error = function(e) NULL))  #  ^1^  ^2^ 
+    if (!is.null(term) && nrow(term) > 0 && !all(is.na(term$latitude))) {
+      tibble(SchoolLatitude = term$latitude, SchoolLongitude = term$longitude)
+    } else {
+      tibble(SchoolLatitude = NA_real_, SchoolLongitude = NA_real_)
+    }
+  } else {
+    tibble(SchoolLatitude = res$latitude, SchoolLongitude = res$longitude)
+  }
+})
+
+# Then bind to df_school_chars
+df_school_chars <- dplyr::bind_cols(df_school_chars, coords)
+
+
+```
+
+```{r}
+
+# this script is from the SAMHE_core_files, called  'data_set_formation.R, 
+
+# This script calls midsection_core.R and data_set_formation_scripts.R.
+# It pulls IAQ data from the Influx DB and then cleans it according to the 'SAMHE method' and forms datasets for 24-hour periods   every day, and just occupied school days. 
+# This script also pulls data from AURN weather stations and find the nearest station to each school on each day. 
+
+
+# Data set formation scripts 
+library(tidyverse)
+library(zoo)
+library(openair)
+library(future)
+library(data.table)
+rm(list = ls())  #unload all variables
+
+path <- getwd()
+# Call midsection_core.R, which has functions to pull from Influx midsection database
+source(paste0(path,"/SAMHE_relational_tables.R"))
+source(paste0(path,"/load_external_tables.R"))
+
+source(paste0(path,"/midsection_core.R"))
+# Call "data_set_formation_scripts.R" which stores functions to clean raw data and form important datasets
+source(paste0(path,"/data_set_formation_scripts.R"))
+
+target_year <- "2025"
+
+# Define your start and end dates for raw data
+start_date <- paste0(target_year, "-08-01")
+end_date <- paste0(target_year , "-10-31")
+
+query_cores <- 11
+plan(multisession, workers = query_cores)  # 
+
+Indoor_min <- large_IAQ_timeseries(start_date = start_date , end_date = end_date, interval = "1m", "") %>%
+    mutate(DateTime = as.POSIXct(DateTime)) %>%
+    mutate(Date = as.Date(DateTime))
+
+Indoor_min_24 <- Indoor_min %>%
+  # ENSURE THAT ONLY SCHOOL MONITORS ARE INCLUDED, 3 options: 
+  # 1. Keep only single monitor schools 
+  #filter_SMM_schools(.,df_school_monitors, research_schools)  %>%
+  # 2. OR keep only multiple monitor schools 
+  # filter_MSM_schools(.,df_school_monitors, research_schools)  %>%
+  # 3. OR keep all school monitors (remove any monitors not placed in schools)
+   filter(device_id %in% df_school_monitors$MonitorReferenceId)%>%
+  filter_75PC_24hr_day_minutely() %>%
+  clean_minutely_data()%>%
+  clean_minutely_CO2() 
+
+##SLOW
+Indoor_min_SchHrs <- Indoor_min_24 %>%
+  filter_75PC_school_day_minutely() %>%
+  filter_school_days(., term_dates, national_holidays_dates)
+
+Indoor_hourly_SchHrs <- Indoor_min_SchHrs %>%
+  group_by(DateTime = floor_date(DateTime, unit = "hour"), device_id) %>% 
+  summarise(
+    across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc),
+           ~ mean(.x, na.rm = TRUE),
+           .names = "{.col}"),
+    DateDevice = first(DateDevice),
+    Date       = first(Date),
+    .groups    = "drop"
+  )
+
+Indoor_hourly_24 <- Indoor_min_24 %>%
+  group_by(DateTime = floor_date(DateTime, unit = "hour"), device_id) %>% 
+  summarise(
+    across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc),
+           ~ mean(.x, na.rm = TRUE),
+           .names = "{.col}"),
+    DateDevice = first(DateDevice),
+    Date       = first(Date),
+    .groups    = "drop"
+  )
+
+Indoor_daily_24 <- Indoor_min_24 %>% 
+  group_by(Date,device_id) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list( 
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+
+# Caclulate per person ventilation rate daily 
+# Calculate ventilation rates based upon 24 hour data 
+T_occ <- 5*1.048
+
+df_pp_ventilation_ <- Indoor_hourly_24 %>%
+  filter_SMM_schools(.,df_school_monitors, research_schools)  %>%
+  filter(hour(DateTime) >= 5 & hour(DateTime) <= 22) %>%  
+  left_join(df_school_monitors, by = c("device_id" = "MonitorReferenceId"))%>%
+  mutate(schoolday_Id = paste0(device_id, "-", as.Date(DateTime) )) %>%
+  mutate(C_excess = (rco2 -412)/1000000)%>%
+  mutate(primary_secondary = case_when(
+    (SchoolType %in% c(1,2,3)) ~ "Primary",
+    (SchoolType %in% c(4,8,12,16,20,24,28)) ~ "11-plus",
+    .default = "Mixed"))%>% 
+  mutate(G_pp = case_when(primary_secondary == "Primary" ~ 3.1,  #2.12 calc
+                          primary_secondary == "11-plus" ~ 4.32,
+                          primary_secondary == "Mixed" ~ 4.32)) %>% 
+  ungroup()%>%
+  arrange(device_id, DateTime) %>%
+  group_by(Date, device_id) %>%
+  mutate(t_diff = replace_na(  as.numeric(DateTime) - as.numeric(lag(DateTime, default = NA)) , 0)   )%>%
+  mutate(C_trap = (t_diff /3600) * (C_excess + lag(C_excess, default = 0)) / 2) %>%
+  mutate(C_integral = cumsum(C_trap))  %>%
+  ungroup() %>%
+  group_by(SchoolId_long, device_id, Date) %>% 
+  summarise(pp_ventilation = 0.001*T_occ * mean(G_pp) / sum(C_trap) , CO2_mean = mean(rco2)) %>% 
+  arrange(desc(pp_ventilation)) %>%
+  mutate(DateDevice = paste(Date, device_id))
+
+
+# Calculate school day daily data
+Indoor_daily_SchHrs <- Indoor_hourly_24 %>%
+  filter_school_days(., term_dates = term_dates,
+                     national_holidays_dates = national_holidays_dates) %>% 
+  group_by(Date, device_id) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list( 
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )),
+  DateDevice=first(DateDevice),
+  Date=first(Date))  %>%
+  # 
+  left_join(df_pp_ventilation_, by =c("Date", "device_id", "DateDevice"))
+
+### Ensemble data sets - taking averages across all schools 
+# The mean of the minutely mean concentrations of all schools reporting each hour
+SAMHE_min_SchHrs <- Indoor_min_SchHrs %>%  
+  group_by(DateTime) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list(
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+# The mean of the hourly mean concentrations of all schools reporting each hour
+SAMHE_Sch_hourly_mean <- Indoor_hourly_SchHrs %>%  
+  group_by(DateTime) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list(
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+# The mean of the school day mean concentrations of all schools reporting each school day 
+SAMHE_Sch_daily_mean <- Indoor_daily_SchHrs %>%  
+  rename(pm01 = pm01_mean, pm02 = pm02_mean,  rco2= rco2_mean, pm10 = pm10_mean, rhum = rhum_mean, atmp = atmp_mean, tvoc = tvoc_mean)  %>%
+  group_by(Date) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list(
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+# The mean of the minutely mean concentrations of all schools reporting each hour
+SAMHE_min_24 <- Indoor_min_24 %>%  
+  group_by(DateTime) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list(
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+# The mean of the hourly mean concentrations of all schools reporting each hour
+SAMHE_24_hourly_mean <- Indoor_hourly_24 %>%  
+  group_by(DateTime) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list(
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+# The mean of the school day mean concentrations of all schools reporting each school day 
+SAMHE_24_daily_mean <- Indoor_daily_24 %>%  
+  rename(pm01 = pm01_mean, pm02 = pm02_mean,  rco2= rco2_mean, pm10 = pm10_mean, rhum = rhum_mean, atmp = atmp_mean, tvoc = tvoc_mean)  %>%
+  group_by(Date) %>%
+  summarise(across(c(pm01, pm02, rco2, pm10, rhum, atmp, tvoc), list(
+    mean = ~mean(., na.rm = TRUE),
+    median = ~median(., na.rm = TRUE),
+    q25 = ~quantile(., 0.25, na.rm = TRUE),
+    q75 = ~quantile(., 0.75, na.rm = TRUE)
+  )))
+
+
+### Outdoor data ##############################################################
+start_year <- target_year
+end_year <- as.character(as.numeric(target_year) + 1)
+
+aurn_meta <- importMeta(year = start_year:end_year) %>% 
+  filter(!site_type %in% c("Urban Traffic", "Urban Industrial", "Suburban Industrial"))
+
+df_Outdoor_AQ <- importAURN(year = start_year:end_year, data_type = "hourly", pollutant = "all", site = aurn_meta$code) %>% 
+  rename(pm10_out = pm10)
+
+df_Outdoor_AURN <- df_Outdoor_AQ %>% 
+  mutate(DateTime = as.POSIXct(date), Date = as.Date(date)) %>% 
+  # Convert outdoor data to local UK time (BST/GMT aware)
+  mutate(DateTime = with_tz(DateTime, tzone = "Europe/London")) %>%
+  rename(device_id = code) %>%
+  filter_75PC_24hr_day_hourly %>%
+  rename(code = device_id)%>%
+  mutate(DateCode = paste0(Date,code)) %>%
+  group_by(DateCode) %>%  # Replace group_column with the actual grouping column(s) you have
+  filter(mean(is.na(pm2.5)) <= 0.25) %>%
+  left_join(aurn_meta )
+
+
+
+In_Out_24 <- closest_site_each_day(Indoor_hourly_24 %>%
+                                     left_join(df_school_chars %>% select("MonitorReferenceId", SchoolId_short, SchoolLongitude, SchoolLatitude) %>% rename("device_id" ="MonitorReferenceId")), 
+                                   df_Outdoor_AURN)
+
+
+In_Out_SchHrs <- closest_site_each_day(Indoor_hourly_SchHrs %>%
+                                     left_join(df_school_chars %>% select("MonitorReferenceId",  SchoolId_short, SchoolLongitude, SchoolLatitude)%>% rename("device_id" ="MonitorReferenceId")), 
+                                     df_Outdoor_AURN )
+
+
+save(
+  Indoor_hourly_SchHrs,
+  Indoor_hourly_24,
+  Indoor_daily_24,
+  df_pp_ventilation_,
+  Indoor_daily_SchHrs,
+  SAMHE_Sch_hourly_mean,
+  SAMHE_Sch_daily_mean,
+  SAMHE_24_hourly_mean,
+  SAMHE_24_daily_mean,
+  aurn_meta,
+  df_Outdoor_AQ,
+  df_Outdoor_AURN,
+  In_Out_24,
+  In_Out_SchHrs,
+  file = paste0("SAMHE_", target_year, ".RData")
+)
+
+
+```
+
