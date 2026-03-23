@@ -354,7 +354,7 @@ cor_val <- cor(df_openair$pm25_outdoor,
                method = "pearson",
                use = "complete.obs")
 
-lm_fit <- lm(pm25_indoor ~ pm25_outdoor, data = df_openair)
+lm_fit <- lm(pm25_indoor ~ pm25_outdoor, data = df_annual)
 
 stats_label <- paste0(
   "n = ", nrow(df_openair), "\n",
