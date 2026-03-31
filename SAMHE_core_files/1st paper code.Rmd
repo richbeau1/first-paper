@@ -10,6 +10,8 @@ date: "2026-02-17"
 
 ```{r}
 
+# make sure to be connected to FortiClient VPN ( i think) and have the correct permissions to access the database. Then run this chunk to load the relational tables and the SAMHE dataset.
+
 # loads all the relational tables as first chunk
 setwd('/Users/richardbeaumont/R projects/1st Paper/SAMHE_core_files')
 source("SAMHE_relational_tables.R")
@@ -25,129 +27,15 @@ source("load_SAMHE_dataset.R")
 
 ```
 
-
 ```{r}
+
+# HERE STARTS THE ANALYSIS AND PLOTS FOR THE PAPER.
+
 # Figure 1: Map of identified SAMHE sites and corresponding DEFRA sites.
 # • Objective: RQ1 / Objective 1 (describes network and pairing quality).
 # • Stats: Descriptive only – calculate mean, median, range and distribution of SAMHE–AURN distances. 
 
-# PLESE NOTE: This code chunk is for visualisation purposes only and does not perform any statistical analysis. It creates a map showing the locations of the SAMHE sites and their paired AURN sites, with lines connecting each pair and coloured by distance. 
-
-
-##### I NEED TO USE THE CORRECT DATASET WITH THE TIMES AND DATES IN IT, NOT THE FULL SAMHE dataset, TO GET THE CORRECT SITES AND PAIRINGS. I THINK THIS SHOULD BE THE "In_Out_24" dataset, WHICH HAS THE 24-HOUR PAIRINGS AND DISTANCES. (THIS IS ONLY GFOR 2025). 
-
-pacman::p_load(dplyr, sf, ggplot2, rnaturalearth, viridis)
-
-# ---- 1. Prepare pairing table ----
-pairs <- In_Out_24 %>%
-  distinct(SchoolId_short, site, .keep_all = TRUE) %>%
-  select(
-    SchoolId_short,
-    SAMHE_lon = SchoolLongitude,
-    SAMHE_lat = SchoolLatitude,
-    AURN_site = site,
-    AURN_lon  = longitude,
-    AURN_lat  = latitude,
-    distance_km = km_distance_to_AURN
-  ) %>%
-  filter(!is.na(SAMHE_lat), !is.na(AURN_lat))
-
-# ---- 2. Descriptive statistics label ----
-dist_stats <- pairs %>%
-  summarise(
-    n_schools = n_distinct(SchoolId_short),
-    mean_km   = mean(distance_km, na.rm = TRUE),
-    median_km = median(distance_km, na.rm = TRUE),
-    min_km    = min(distance_km, na.rm = TRUE),
-    max_km    = max(distance_km, na.rm = TRUE)
-  )
-
-stats_label <- paste0(
-  "n = ", dist_stats$n_schools, "\n",
-  "Mean = ", round(dist_stats$mean_km, 1), " km\n",
-  "Median = ", round(dist_stats$median_km, 1), " km\n",
-  "Range = ", round(dist_stats$min_km, 1), "–", round(dist_stats$max_km, 0), " km"
-)
-
-# ---- 3. Convert to sf objects ----
-samhe_sf <- st_as_sf(pairs,
-                     coords = c("SAMHE_lon","SAMHE_lat"),
-                     crs = 4326, remove = FALSE)
-
-aurn_sf  <- st_as_sf(pairs,
-                     coords = c("AURN_lon","AURN_lat"),
-                     crs = 4326, remove = FALSE)
-
-lines_sf <- st_as_sf(
-  pairs %>%
-    rowwise() %>%
-    mutate(geometry = st_sfc(
-      st_linestring(matrix(c(SAMHE_lon, SAMHE_lat,
-                             AURN_lon,  AURN_lat),
-                           ncol = 2, byrow = TRUE)),
-      crs = 4326)) %>%
-    ungroup(),
-  crs = 4326
-)
-
-# ---- 4. UK basemap ----
-uk <- rnaturalearth::ne_states(country = "United Kingdom",
-                               returnclass = "sf")
-
-# ---- 5. Plot ----
-ggplot() +
-  geom_sf(data = uk,
-          fill = "white",
-          colour = "grey40",
-          linewidth = 0.3) +
-  geom_sf(data = lines_sf,
-          aes(color = distance_km),
-          linewidth = 0.25,
-          alpha = 0.6) +
-  geom_sf(data = aurn_sf,
-          aes(fill = distance_km),
-          shape = 21,
-          colour = "black",
-          size = 2.2,
-          stroke = 0.3) +
-  geom_sf(data = samhe_sf,
-          aes(shape = "SAMHE site"),
-          colour = "red",
-          size = 1.2) +
-  coord_sf(xlim = c(-8.5, 2.5),
-           ylim = c(49.5, 60.9),
-           clip = "off") +
-  scale_shape_manual(name = "Site type",
-                     values = c("SAMHE site" = 16)) +
-  scale_color_viridis_c(name = "Distance to AURN (km)") +
-  scale_fill_viridis_c(name = "Distance to AURN (km)") +
-  guides(
-    shape = guide_legend(order = 1),
-    color = guide_colorbar(order = 2),
-    fill  = guide_colorbar(order = 2)
-  ) +
-  theme_minimal(base_size = 11) +
-  theme(
-    panel.grid = element_blank(),
-    legend.position = "right",
-    legend.box = "vertical",
-    legend.title = element_text(size = 11),
-    legend.text  = element_text(size = 11),
-    plot.margin = margin(5.5, 80, 5.5, 5.5)
-  ) +
-  annotate("text",
-           x = 2.7,
-           y = 52.5,
-           label = stats_label,
-           hjust = 0,
-           vjust = 1,
-           size = 3.5)
-```
-
-```{r}
-
-# this is same as the map above with the colour of SAMHE signifying the distance to the paired AURN site, and a label with the descriptive statistics of the distances.
-
+# PLESE NOTE: This code chunk is for visualisation purposes only and does not perform any statistical analysis. It creates a map showing the locations of the SAMHE sites and their paired AURN sites, with lines connecting each pair and coloured by distance.
 
 pacman::p_load(dplyr, sf, ggplot2, rnaturalearth)
 
@@ -251,7 +139,8 @@ scale_color_viridis_c(
   theme_minimal() +
   theme(
     panel.grid = element_blank(),
-    legend.position = "right",
+    legend.position = c(1.3, 0.5),
+    legend.justification = c(1, 0.5),
     legend.title = element_text(size = 10),
     legend.text  = element_text(size = 9),
     plot.margin = margin(5.5, 95, 5.5, 5.5)
@@ -259,7 +148,7 @@ scale_color_viridis_c(
 
   # stats block in right margin under legend
   annotate("text",
-           x = 3.7,
+           x = 2.0,
            y = 53.7,
            label = stats_label,
            hjust = 0,
@@ -268,7 +157,7 @@ scale_color_viridis_c(
 # blue dot
 
  annotate("point",
-         x = 3.7,
+         x = 2.0,
          y = 54,
          shape = 21,
          colour = "black",
@@ -276,21 +165,100 @@ scale_color_viridis_c(
          size = 2.5,
          stroke = 0.8) +
          
-
-  
-
 # label next to dot
  annotate("text",
-         x = 3.85,
+         x = 2.05,
          y = 54,
-         label = "AURN sites",
+         label = "  AURN sites",
          hjust = 0,
          size = 3.5)
 ```
 
+```{r}
+
+# this plot is for visualisation purposes only and does not perform any statistical analysis. It creates a time series plot showing the daily mean indoor and outdoor PM2.5 levels, with shaded ribbons representing the interquartile range (25th to 75th percentile) for each site. The correlation coefficient (R²) is annotated on the plot.
+
+library(dplyr)
+library(tidyr)
+library(ggplot2) 
+library(openair) 
+library(ggpubr) # for stat_cor() function
+
+# daily is a long format dataset, i did check the r, r2 and p values using the wide format dataset "wide_daily" and the cor() and cor.test() functions, and they match the values from the modStats() function, so I am confident that the correlation is being calculated correctly. (it was) 
+
+daily <- In_Out_24 %>%
+  mutate(date = as.Date(DateTime)) %>%
+  group_by(date) %>%
+  summarise(
+    Indoor_mean   = mean(pm02, na.rm = TRUE),
+    Indoor_q25    = quantile(pm02, 0.25, na.rm = TRUE),
+    Indoor_q75    = quantile(pm02, 0.75, na.rm = TRUE),
+    Outdoor_mean  = mean(pm2.5, na.rm = TRUE),
+    Outdoor_q25   = quantile(pm2.5, 0.25, na.rm = TRUE),
+    Outdoor_q75   = quantile(pm2.5, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_longer(
+    cols = -date,
+    names_to = c("site", ".value"),
+    names_pattern = "(Indoor|Outdoor)_(mean|q25|q75)"
+  )
+
+r <- cor(daily$mean[daily$site == "Indoor"],
+         daily$mean[daily$site == "Outdoor"],
+         use = "complete.obs")
+r2_spearman <- cor(
+  daily$mean[daily$site == "Indoor"],
+  daily$mean[daily$site == "Outdoor"],
+  method = "spearman",
+  use = "complete.obs"
+)^2
+
+p <- cor.test(
+  daily$mean[daily$site == "Indoor"],
+  daily$mean[daily$site == "Outdoor"]
+)$p.value
+
+ggplot(daily, aes(x = date, y = mean, colour = site, fill = site)) +
+  geom_ribbon(aes(ymin = q25, ymax = q75),
+              alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 0.25) +
+  scale_colour_manual(
+    values = c(Outdoor = "#E57200", Indoor = "#7A1FA2"),
+    labels = c(Outdoor = "Outdoor (DEFRA)", Indoor = "Indoor (SAMHE)")
+  ) +
+  scale_fill_manual(
+    values = c(Outdoor = "#E57200", Indoor = "#7A1FA2"),
+    labels = c(Outdoor = "Outdoor (DEFRA)", Indoor = "Indoor (SAMHE)")
+  ) +
+  labs(
+    x = "Date",
+    y = expression("Daily mean PM"[2.5]),
+    colour = NULL, fill = NULL
+  ) +
+  annotate(
+    "text",
+    x = min(daily$date),
+    y = max(daily$mean),
+    label = paste0 ("R² = ", round(r2_spearman, 2), ", p < 0.001"),
+    hjust = 0
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    aspect.ratio = 0.25
+  ) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b '%y")
+
+ggsave("plot.png", width = 24, height = 4, dpi = 300)
+
+```
+
+
 
 ```{r}
-# Figure 2: Scatter plot of annual mean indoor PM2.5 on the y-axis and annual mean outdoor (this isn't on the list but seemed a good plot to produce as a first step to check the data and pairings are working as expected). 
+
+# Figure 2: timevaraition plot from openair of annual mean indoor PM2.5 on the y-axis and annual mean outdoor (this isn't on the list but seemed a good plot to produce as a first step to check the data and pairings are working as expected). this uses the wholw dataset not the school time to show infiltration during all times 
 
 library(dplyr) 
 library(lubridate)
@@ -309,18 +277,12 @@ df_hourly <- In_Out_24 %>%
 timeVariation(
   df_hourly,
   pollutant = c("indoor", "outdoor"),
-  normalise = TRUE,
+  normalise = FALSE,
   statistic = "median",
+  cols = c("#7A1FA2", "#E57200"),
   main = "Hourly MEDIAN of all schools 24hrs and nearest AURN station (2023-01-01 00:00:00 GMT 2026-02-23 23:00:00 GMT)"
 )
 ```
-
-
-
-
-
-
-
 
 ```{r}
 
@@ -330,55 +292,102 @@ timeVariation(
 # • Stats: Pearson (or Spearman if non-normal) correlation between indoor and outdoor PM₂.₅.
 # • Simple linear regression: indoor PM₂.₅ ~ outdoor PM₂.₅
 
+pacman::p_load(dplyr, openair, tidyverse)
 
-pacman::p_load(dplyr,openair,tidyverse)
+# this code uses the whole timeset and not for term and occupancy time; that is plotted on the next plot!
 
-# ---- 1. Prepare 2025 annual means ----
-df_annual <- In_Out_24 %>%
+# ---- ALL TIME (24-hour) ----
+df_annual_all <- In_Out_24 %>%
   mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
-  filter(Year == 2025) %>%
+  filter(Year %in% 2023:2025) %>%
   group_by(SchoolId_short) %>%
   summarise(
-    indoor_pm25  = mean(`pm02`, na.rm = TRUE),
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
     outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
     .groups = "drop"
   ) %>%
   filter(!is.na(indoor_pm25), !is.na(outdoor_pm25))
 
-# ---- 2. Scatter with regression + correlation ----
-library(openair)
+r_all  <- cor(df_annual_all$outdoor_pm25, df_annual_all$indoor_pm25)
+r2_all <- r_all^2
+p_all  <- cor.test(df_annual_all$outdoor_pm25,
+                   df_annual_all$indoor_pm25)$p.value
 
-# Calculate correlation + regression manually
-cor_val <- cor(df_openair$pm25_outdoor,
-               df_openair$pm25_indoor,
-               method = "pearson",
-               use = "complete.obs")
-
-lm_fit <- lm(pm25_indoor ~ pm25_outdoor, data = df_annual)
-
-stats_label <- paste0(
-  "n = ", nrow(df_openair), "\n",
-  "r = ", round(cor_val, 2), "\n",
-  "R² = ", round(summary(lm_fit)$r.squared, 2), "\n",
-  "Indoor = ",
-  round(coef(lm_fit)[1], 2), " + ",
-  round(coef(lm_fit)[2], 2),
-  " × Outdoor"
+scatterPlot(
+  df_annual_all,
+  x = "outdoor_pm25",
+  y = "indoor_pm25",
+  linear = TRUE,
+  cor = TRUE,
+  xlim = c(0, 20),
+  ylim = c(0, 20),
+  aspect = 1,
+  main = "2023:2025 Indoor vs Outdoor PM2.5 (All time)"
 )
 
-scatterPlot(df_annual,
-            x = "outdoor_pm25",
-            y = "indoor_pm25",
-            linear = TRUE,
-            cor = TRUE,
-            cex = 0.5,
-            xlim = c(0, 20),
-            ylim = c(0, 20),
-            main = "Indoor vs Outdoor PM2.5 (2025 annual means)")
+```
+```{r}
+# this plot is the same as the above plot but slip into years and add different colours for each year, and a regression line fitted across all years. this is just to check that the data and pairings are working as expected, and to provide a comparison for the term-time plot.
 
+pacman::p_load(dplyr, ggplot2)
 
+df_annual_all <- In_Out_24 %>%
+  mutate(Year = as.factor(format(DateTime, "%Y"))) %>%
+  filter(Year %in% c("2023", "2024", "2025")) %>%
+  group_by(SchoolId_short, Year) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(indoor_pm25), !is.na(outdoor_pm25))
+
+ggplot(df_annual_all, aes(x = outdoor_pm25, y = indoor_pm25, colour = Year)) +
+  geom_point(shape = 1, size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.8) +
+  coord_fixed(ratio = 1, xlim = c(0, 20), ylim = c(0, 20)) +
+  labs(
+    title = "2023–2025 Indoor vs Outdoor PM2.5 (All time)",
+    x = expression(outdoor_PM[2.5]),
+    y = expression(indoor_PM[2.5])
+  ) +
+  theme_minimal()
 ```
 
+
+```{r}
+
+# this code uses the term and occupancy time data, which is the main focus of the paper, and is plotted in the next plot. The above code is just to check that the data and pairings are working as expected, and to provide a comparison for the term-time plot.
+
+# ---- SCHOOL HOURS (occupied / term-time proxy) ----
+df_annual_schhrs <- In_Out_SchHrs %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(indoor_pm25), !is.na(outdoor_pm25))
+
+r_sch  <- cor(df_annual_schhrs$outdoor_pm25, df_annual_schhrs$indoor_pm25)
+r2_sch <- r_sch^2
+p_sch  <- cor.test(df_annual_schhrs$outdoor_pm25,
+                   df_annual_schhrs$indoor_pm25)$p.value
+
+scatterPlot(
+  df_annual_schhrs,
+  x = "outdoor_pm25",
+  y = "indoor_pm25",
+  linear = TRUE,
+  cor = TRUE,
+  xlim = c(0, 20),
+  ylim = c(0, 20),
+  aspect = 1,
+  main = "2023:2025 Indoor vs Outdoor PM2.5 (School hours)"
+)
+```
 
 
 
@@ -392,77 +401,432 @@ scatterPlot(df_annual,
 library(dplyr)
 library(openair)
 
-# Annual means per school (2025) + I/O ratio
-df_annual_io <- In_Out_24 %>%
+# Annual means per school (2023:2025) + I/O ratio. each school is plotted per year so three dots per school, and the regression line is fitted across all schools and years. I/O ratio is plotted against outdoor PM2.5 to show how infiltration varies with outdoor concentration, which is a key question for the paper.
+
+library(dplyr)
+library(ggplot2)
+
+# 1. Create annual school-year means and I/O ratio
+df_annual_io <- In_Out_SchHrs %>%
   mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
-  filter(Year == 2025) %>%
-  group_by(SchoolId_short) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short, Year) %>%
   summarise(
-    indoor_pm25  = mean(pm02,    na.rm = TRUE),   # SAMHE indoor PM2.5
-    outdoor_pm25 = mean(`pm2.5`, na.rm = TRUE),   # AURN outdoor PM2.5
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(`pm2.5`, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  filter(is.finite(indoor_pm25), is.finite(outdoor_pm25), outdoor_pm25 > 0) %>%
+  filter(
+    is.finite(indoor_pm25),
+    is.finite(outdoor_pm25),
+    outdoor_pm25 > 0
+  ) %>%
   mutate(io_ratio = indoor_pm25 / outdoor_pm25)
 
-# I/O vs outdoor with a non-linear smoother (loess)
-scatterPlot(
-  df_annual_io,
-  x = "outdoor_pm25",
-  y = "io_ratio",
-  cex = 0.5,
-  smooth = TRUE,          # non-linear loess line
-  linear = FALSE,
-  xlab = "Annual mean outdoor PM2.5 (µg m-3)",
-  ylab = "Annual mean I/O ratio (indoor/outdoor)",
-  main = "Annual mean I/O ratio vs outdoor PM2.5 (2025)"
+# 2. Plotting dataframe
+df_plot <- df_annual_io %>%
+  filter(io_ratio > 0) %>%
+  mutate(Year = factor(Year))
+
+# 3. Statistics
+cor_test <- cor.test(df_plot$outdoor_pm25, df_plot$io_ratio, method = "pearson")
+lm_fit   <- lm(io_ratio ~ outdoor_pm25, data = df_plot)
+
+r_val  <- unname(cor_test$estimate)
+p_val  <- cor_test$p.value
+r2_val <- summary(lm_fit)$r.squared
+n_val  <- nrow(df_plot)
+
+stats_label <- paste0(
+  "n = ", n_val,
+  "\nPearson r = ", round(r_val, 2),
+  "\np = ", format.pval(p_val, digits = 2, eps = .001),
+  "\nR² = ", round(r2_val, 2)
 )
+
+# 4. Plot
+ggplot(df_plot, aes(x = outdoor_pm25, y = io_ratio, colour = Year)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(aes(group = 1), method = "lm", se = TRUE, colour = "black") +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = stats_label,
+    hjust = 1.05, vjust = 1.2,
+    size = 5
+  ) +
+  coord_cartesian(ylim = c(0, 2)) +
+  labs(
+    x = "Annual mean outdoor PM2.5 (µg m-3)",
+    y = "Annual mean I/O ratio",
+    colour = "Year",
+    title = "Annual mean I/O ratio vs outdoor PM2.5 (2023–2025)"
+  ) +
+  theme_minimal(base_size = 14)
+
 ```
 
 ```{r}
-# the above plot is extra, here are the faceted plots by season, which is the main focus of the paper. 
+# the above plot is extra, here are the faceted plots by season. 
 library(dplyr)
 library(lubridate)
 
-df_seasonal <- In_Out_24 %>%
-  mutate(
-    date = as.Date(DateTime),
-    Year = year(date),
-    Month = month(date),
-    Season = case_when(
-      Month %in% c(12,1,2)  ~ "Winter",
-      Month %in% c(3,4,5)   ~ "Spring",
-      Month %in% c(6,7,8)   ~ "Summer",
-      Month %in% c(9,10,11) ~ "Autumn"
-    )
-  ) %>%
-  filter(Year == 2025) %>%
-  group_by(SchoolId_short, Season) %>%
-  summarise(
-    indoor  = mean(pm02, na.rm = TRUE),
-    outdoor = mean(`pm2.5`, na.rm = TRUE),
-    IO_ratio = indoor / outdoor,
-    .groups = "drop"
-  ) %>%
-  filter(!is.na(IO_ratio), is.finite(IO_ratio))
-
-
-# Scatter plot of I/O ratio vs outdoor PM2.5, faceted by season 
-
+library(dplyr)
 library(ggplot2)
 
-ggplot(df_seasonal, aes(x = outdoor, y = IO_ratio)) +
-  #geom_point(alpha = 0.6) +
-  geom_point(colour = "red", alpha = 0.4, size = 1.2) +
-  geom_smooth(method = "lm", se = TRUE) +
-  facet_wrap(~ Season, scales = "free_x") +
+# stats per season
+stats_season <- df_seasonal %>%
+  group_by(Season) %>%
+  summarise(
+    r = cor(outdoor, IO_ratio, use = "complete.obs"),
+    r2 = summary(lm(IO_ratio ~ outdoor))$r.squared,
+    n = n(),
+    label = paste0("n = ", n,
+                   "\nr = ", round(r, 2),
+                   "\nR² = ", round(r2, 2)),
+    x = Inf, y = Inf,
+    .groups = "drop"
+  )
+
+ggplot(df_seasonal, aes(x = outdoor, y = IO_ratio, colour = Year)) +
+  geom_point(alpha = 0.5, size = 0.9) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, colour = "black") +  # removed CI
+  facet_wrap(~Season) +
+  geom_text(
+    data = stats_season,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1, vjust = 1.1, size = 3.5
+  ) +
+  coord_cartesian(xlim = c(0, 20), ylim = c(0, 2)) +
   labs(
     x = "Seasonal mean outdoor PM2.5 (µg m-3)",
-    y = "Seasonal mean I/O ratio"
+    y = "Seasonal mean I/O ratio",
+    colour = "Year",
+    title = "Seasonal I/O ratio vs outdoor PM2.5 (school hours, 2023–2025)"
   ) +
-  theme_minimal()
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+# Figure 4: Indoor PM2.5 vs ventilation type boxplot (different ventilation types)
+# • RQ / Objective: RQ3 / Objective 3 (building-level determinants).
+# • Stats: Group comparison of indoor PM₂.₅ across ventilation types: ANOVA (if normal) or Kruskal–Wallis (if non-normal). Post-hoc pairwise tests if significant.
+
+pacman::p_load(dplyr, ggplot2)
+
+df_plot <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25 = mean(pm02, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, BuildingEnvironment) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(BuildingEnvironment), !is.na(indoor_pm25))
+
+anova_mod <- aov(indoor_pm25 ~ BuildingEnvironment, data = df_plot)
+anova_tab <- summary(anova_mod)[[1]]
+f_val <- round(anova_tab$`F value`[1], 2)
+p_val <- signif(anova_tab$`Pr(>F)`[1], 2)
+
+n_df <- df_plot %>%
+  count(BuildingEnvironment)
+
+y_max <- max(df_plot$indoor_pm25, na.rm = TRUE)
+
+ggplot(df_plot, aes(x = BuildingEnvironment, y = indoor_pm25)) +
+  geom_boxplot() +
+  geom_text(
+    data = n_df,
+    aes(x = BuildingEnvironment, y = y_max * 1.03, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = y_max * 1.12,
+    hjust = 0,
+    label = paste0("ANOVA: F = ", f_val, ", p = ", p_val),
+    size = 4
+  ) +
+  labs(
+    x = "Ventilation type",
+    y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+summary(anova_mod)
+
 ```
 ```{r}
-# this is for school region comparisons of I/O ratio.
+
+# the above plot compares indoor PM2.5 across all the different building environment categories, which is a bit messy and hard to interpret, so here I have grouped the categories into "Mechanical" (heating & mechanical ventilation + air conditioning) vs "Natural" (heating & natural ventilation), which is a more meaningful comparison for the paper and easier to interpret. The ANOVA is still performed on the original categories, but the boxplot is shown for the grouped categories.
+
+
+pacman::p_load(dplyr, ggplot2)
+
+df_plot <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25 = mean(pm02, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, BuildingEnvironment) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(BuildingEnvironment), !is.na(indoor_pm25)) %>%
+  mutate(
+    Vent_group = case_when(
+      BuildingEnvironment %in% c("Heating and Mechanical Ventilation", "Air Conditioning") ~ "Mechanical",
+      BuildingEnvironment == "Heating and Natural Ventilation" ~ "Natural",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(Vent_group))
+
+tt <- t.test(indoor_pm25 ~ Vent_group, data = df_plot)
+p_val <- signif(tt$p.value, 2)
+
+n_df <- df_plot %>% count(Vent_group)
+
+y_max <- max(df_plot$indoor_pm25, na.rm = TRUE)
+
+ggplot(df_plot, aes(x = Vent_group, y = indoor_pm25)) +
+  geom_boxplot() +
+  geom_text(
+    data = n_df,
+    aes(x = Vent_group, y = y_max * 1.03, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = y_max * 1.12,
+    hjust = 0,
+    label = paste0(
+      "t-test p = ", p_val, "\n",
+      "Mechanical = Heating & Mechanical Ventilation + Air Conditioning\n",
+      "Natural = Heating & Natural Ventilation"
+    ),
+    size = 4
+  ) +
+  labs(
+    x = "Ventilation group",
+    y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
+  ) +
+  theme_bw()
+
+tt
 ```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Figure 5: Indoor PM2.5 vs IMD decile (box plot indoor PM2.5 on y-axis, least to most
+# deprived on x-axis)
+# • RQ / Objective: RQ3 / Objective 3 (socioeconomic context).
+# • Stats: Spearman correlation between PM₂.₅ and IMD category.
+
+pacman::p_load(dplyr, ggplot2)
+
+df_plot <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25 = mean(pm02, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, IMD_decile) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(IMD_decile), !is.na(indoor_pm25)) %>%
+  mutate(IMD_decile = factor(IMD_decile, levels = 1:10))
+
+# Spearman
+sp <- cor.test(df_plot$indoor_pm25,
+               as.numeric(as.character(df_plot$IMD_decile)),
+               method = "spearman")
+
+rho <- round(sp$estimate, 2)
+pval <- signif(sp$p.value, 2)
+
+# n per decile
+n_df <- df_plot %>%
+  count(IMD_decile)
+
+ggplot(df_plot, aes(x = IMD_decile, y = indoor_pm25)) +
+  geom_boxplot(outlier.shape = NA, fill = "grey85") +
+  geom_jitter(width = 0.15, alpha = 0.3, size = 1) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 2.5, fill = "black") +
+  geom_text(
+    data = n_df,
+    aes(x = IMD_decile, y = max(df_plot$indoor_pm25, na.rm = TRUE) * 1.05,
+        label = paste0("n=", n)),
+    size = 3
+  ) +
+  annotate("text",
+           x = 1,
+           y = max(df_plot$indoor_pm25, na.rm = TRUE) * 1.15,
+           hjust = 0,
+           label = paste0("Spearman \u03C1 = ", rho, "\np = ", pval),
+           size = 4) +
+  labs(
+    x = "IMD decile (1 = most deprived, 10 = least deprived)",
+    y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
+  ) +
+  theme_bw()
+
+
+```
+
+```{r}
+# Figure 8: CO2 vs I/O PM2.5 ratio scatterplot with non-linear trend line.
+# • RQ / Objective: RQ2 / Objective 2 (ventilation interpretation using CO₂).
+# • Stats: Spearman correlation between CO₂ and I/O ratio.
+
+pacman::p_load(dplyr, ggplot2)
+
+df_plot <- In_Out_SchHrs %>%
+    mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+    group_by(SchoolId_short, Year) %>%
+    summarise(
+        indoor_pm25  = mean(pm02, na.rm = TRUE),
+        outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+        co2          = mean(rco2, na.rm = TRUE),
+        io_ratio     = indoor_pm25 / outdoor_pm25,
+        .groups = "drop"
+    ) %>%
+    filter(!is.na(io_ratio), !is.na(co2), is.finite(io_ratio)) %>%
+    filter(outdoor_pm25 > 1, io_ratio < 5)
+
+# Spearman per year
+sp_df <- df_plot %>%
+    group_by(Year) %>%
+    summarise(
+        rho = round(cor(co2, io_ratio, method = "spearman", use = "complete.obs"), 2),
+        p   = signif(cor.test(co2, io_ratio, method = "spearman")$p.value, 2),
+        n   = n(),
+        .groups = "drop"
+    )
+
+y_max <- max(df_plot$io_ratio, na.rm = TRUE)
+
+ggplot(df_plot, aes(x = co2, y = io_ratio, colour = factor(Year))) +
+    geom_point(alpha = 0.4) +
+    geom_smooth(method = "lm", se = FALSE) +
+    annotate(
+        "text",
+        x = min(df_plot$co2, na.rm = TRUE),
+        y = y_max,
+        hjust = 0,
+        label = paste0(
+            paste0("Year ", sp_df$Year,
+                   ": n=", sp_df$n,
+                   ", ρ=", sp_df$rho,
+                   ", p=", sp_df$p),
+            collapse = "\n"
+        )
+    ) +
+    labs(
+        x = "Mean CO2 (ppm)",
+        y = "Indoor / Outdoor PM2.5 ratio",
+        colour = "Year"
+    ) +
+    theme_bw()
+
+
+
+
+
+```
+
+
+```{r}
+# Figure 9: Annual mean I/O PM2.5 ratio by HEPA, Boxplot (with/without filters)
+# • RQ / Objective: RQ3 / Objective 3 (effect of HEPA devices).
+# • Compare I/O ratios between HEPA vs non-HEPA classrooms using t-test.
+
+pacman::p_load(dplyr, ggplot2)
+
+df_plot <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    io_ratio     = indoor_pm25 / outdoor_pm25,
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, MonitoringType) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(MonitoringType), !is.na(io_ratio), is.finite(io_ratio)) %>%
+  mutate(
+    HEPA = case_when(
+      MonitoringType == 1 ~ "No HEPA",
+      MonitoringType == 2 ~ "HEPA",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(HEPA))
+
+tt <- t.test(io_ratio ~ HEPA, data = df_plot)
+p_val <- signif(tt$p.value, 2)
+
+n_df <- df_plot %>%
+  count(HEPA)
+
+y_max <- max(df_plot$io_ratio, na.rm = TRUE)
+
+ggplot(df_plot, aes(x = HEPA, y = io_ratio)) +
+  geom_boxplot() +
+  geom_text(
+    data = n_df,
+    aes(x = HEPA, y = y_max * 1.03, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = y_max * 1.12,
+    hjust = 0,
+    label = paste0("t-test p = ", p_val),
+    size = 4
+  ) +
+  labs(
+    x = NULL,
+    y = "Annual mean indoor / outdoor PM2.5 ratio"
+  ) +
+  theme_bw()
+
+tt
+
+
+```
+
+
 
