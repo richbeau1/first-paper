@@ -13,7 +13,7 @@ date: "2026-02-17"
 # make sure to be connected to FortiClient VPN ( i think) and have the correct permissions to access the database. Then run this chunk to load the relational tables and the SAMHE dataset.
 
 # loads all the relational tables as first chunk
-setwd('/Users/richardbeaumont/R projects/1st Paper/SAMHE_core_files')
+setwd('/Users/richardbeaumont/R_projects/1st_Paper/SAMHE_core_files')
 source("SAMHE_relational_tables.R")
 source("load_external_tables.R")
 
