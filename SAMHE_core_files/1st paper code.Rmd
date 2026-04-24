@@ -721,6 +721,7 @@ df_plot <- In_Out_SchHrs %>%
     filter(outdoor_pm25 > 1, io_ratio < 5)
 
 # Spearman per year
+
 sp_df <- df_plot %>%
     group_by(Year) %>%
     summarise(
