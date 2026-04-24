@@ -73,7 +73,7 @@ stats_label <- paste0(
 
 # ---- 3. Convert to sf objects ----
 samhe_sf <- st_as_sf(pairs, coords = c("SAMHE_lon", "SAMHE_lat"),
-                     crs = 4326, remove = FALSE)
+                     crs = 4326, remove = FALSE) 
 
 aurn_sf  <- st_as_sf(pairs, coords = c("AURN_lon", "AURN_lat"),
                      crs = 4326, remove = FALSE)
@@ -87,7 +87,7 @@ lines_sf <- st_as_sf(
                            ncol = 2, byrow = TRUE)),
       crs = 4326)) %>%
     ungroup(),
-  crs = 4326
+  crs = 4326 
 )
 
 # ---- 4. UK basemap ----
@@ -188,7 +188,7 @@ library(ggpubr) # for stat_cor() function
 
 daily <- In_Out_24 %>%
   mutate(date = as.Date(DateTime)) %>%
-  group_by(date) %>%
+  group_by(date) %>% # group by date to calculate daily statistics across all schools for each day
   summarise(
     Indoor_mean   = mean(pm02, na.rm = TRUE),
     Indoor_q25    = quantile(pm02, 0.25, na.rm = TRUE),
@@ -258,7 +258,7 @@ ggsave("plot.png", width = 24, height = 4, dpi = 300)
 
 ```{r}
 
-# Figure 2: timevaraition plot from openair of annual mean indoor PM2.5 on the y-axis and annual mean outdoor (this isn't on the list but seemed a good plot to produce as a first step to check the data and pairings are working as expected). this uses the wholw dataset not the school time to show infiltration during all times 
+# Figure 2: timevaraition plot from openair of hourly mean indoor PM2.5 on the y-axis and hourly mean outdoor (this isn't on the list but seemed a good plot to produce as a first step to check the data and pairings are working as expected). this uses the wholw dataset not the school time to show infiltration during all times.
 
 library(dplyr) 
 library(lubridate)
@@ -821,7 +821,7 @@ ggplot(df_plot, aes(x = HEPA, y = io_ratio)) +
     x = NULL,
     y = "Annual mean indoor / outdoor PM2.5 ratio"
   ) +
-  theme_bw()
+  theme_bw() 
 
 tt
 
