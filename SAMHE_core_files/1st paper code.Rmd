@@ -10,7 +10,7 @@ date: "2026-02-17"
 
 ```{r}
 
-# make sure to be connected to FortiClient VPN ( i think) and have the correct permissions to access the database. Then run this chunk to load the relational tables and the SAMHE dataset.
+# make sure to be connected to FortiClient VPN (I think) and have the correct permissions to access the database. Then run this chunk to load the relational tables and the SAMHE dataset.
 
 # loads all the relational tables as first chunk
 setwd('/Users/richardbeaumont/R_projects/1st_Paper/SAMHE_core_files')
@@ -172,6 +172,7 @@ scale_color_viridis_c(
          label = "  AURN sites",
          hjust = 0,
          size = 3.5)
+ggsave("fig1_test.png", width = 6, height = 4, dpi = 300)
 ```
 
 ```{r}
@@ -351,7 +352,9 @@ ggplot(df_annual_all, aes(x = outdoor_pm25, y = indoor_pm25, colour = Year)) +
     x = expression(outdoor_PM[2.5]),
     y = expression(indoor_PM[2.5])
   ) +
-  theme_minimal()
+  theme_minimal() 
+ggsave("fig2_test.png", width = 6, height = 4, dpi = 300)
+
 ```
 
 
