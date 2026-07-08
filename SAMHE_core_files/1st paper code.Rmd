@@ -3,10 +3,10 @@ title: "1st paper"
 output: html_document
 date: "2026-02-17"
 ---
+
 ```{r}
 # first check that db_credentials.txt file has the correct passwords and tokens in it, then check the code to make sure the correct root and working directory is specified (if using RStudio, the working directory should be set to the folder containing this script and the other core files, and the code should automatically set the working directory to this folder when run). Then run all chunks in order. The first chunk loads the relational tables, the second chunk loads the SAMHE dataset. The third chunk is for any further processing or analysis you want to do with the data.
 ```
-
 
 ```{r}
 
@@ -255,8 +255,6 @@ ggsave("plot.png", width = 24, height = 4, dpi = 300)
 
 ```
 
-
-
 ```{r}
 
 # Figure 2: timevaraition plot from openair of hourly mean indoor PM2.5 on the y-axis and hourly mean outdoor (this isn't on the list but seemed a good plot to produce as a first step to check the data and pairings are working as expected). this uses the wholw dataset not the school time to show infiltration during all times.
@@ -327,6 +325,7 @@ scatterPlot(
 )
 
 ```
+
 ```{r}
 # this plot is the same as the above plot but slip into years and add different colours for each year, and a regression line fitted across all years. this is just to check that the data and pairings are working as expected, and to provide a comparison for the term-time plot.
 
@@ -356,7 +355,6 @@ ggplot(df_annual_all, aes(x = outdoor_pm25, y = indoor_pm25, colour = Year)) +
 ggsave("fig2_test.png", width = 6, height = 4, dpi = 300)
 
 ```
-
 
 ```{r}
 
@@ -390,9 +388,8 @@ scatterPlot(
   aspect = 1,
   main = "2023:2025 Indoor vs Outdoor PM2.5 (School hours)"
 )
+
 ```
-
-
 
 ```{r}
 
@@ -466,7 +463,6 @@ ggplot(df_plot, aes(x = outdoor_pm25, y = io_ratio, colour = Year)) +
     title = "Annual mean I/O ratio vs outdoor PM2.5 (2023–2025)"
   ) +
   theme_minimal(base_size = 14)
-
 ```
 
 ```{r}
@@ -477,6 +473,32 @@ library(lubridate)
 library(dplyr)
 library(ggplot2)
 
+# Create seasonal dataset for Figure 3 seasonal analysis
+df_seasonal <- In_Out_SchHrs %>%
+  mutate(
+    date = as.Date(DateTime),
+    Year = year(date),
+    Month = month(date),
+    Season = case_when(
+      Month %in% c(12,1,2)  ~ "Winter",
+      Month %in% c(3,4,5)   ~ "Spring",
+      Month %in% c(6,7,8)   ~ "Summer",
+      Month %in% c(9,10,11) ~ "Autumn"
+    )
+  ) %>%
+  filter(Year %in% c(2023, 2024, 2025)) %>%
+  group_by(SchoolId_short, Year, Season) %>%
+  summarise(
+    indoor  = mean(pm02, na.rm = TRUE),
+    outdoor = mean(`pm2.5`, na.rm = TRUE),
+    IO_ratio = indoor / outdoor,
+    .groups = "drop"
+  ) %>%
+  filter(
+    !is.na(IO_ratio),
+    is.finite(IO_ratio),
+    outdoor > 0
+  )
 # stats per season
 stats_season <- df_seasonal %>%
   group_by(Season) %>%
@@ -566,8 +588,10 @@ ggplot(df_plot, aes(x = BuildingEnvironment, y = indoor_pm25)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 summary(anova_mod)
+ggsave("Figure_4_indoor_PM25_vs_ventilation_type.png", width = 6, height = 4, dpi = 300)
 
 ```
+
 ```{r}
 
 # the above plot compares indoor PM2.5 across all the different building environment categories, which is a bit messy and hard to interpret, so here I have grouped the categories into "Mechanical" (heating & mechanical ventilation + air conditioning) vs "Natural" (heating & natural ventilation), which is a more meaningful comparison for the paper and easier to interpret. The ANOVA is still performed on the original categories, but the boxplot is shown for the grouped categories.
@@ -633,16 +657,6 @@ ggplot(df_plot, aes(x = Vent_group, y = indoor_pm25)) +
 tt
 ```
 
-
-
-
-
-
-
-
-
-
-
 ```{r}
 # Figure 5: Indoor PM2.5 vs IMD decile (box plot indoor PM2.5 on y-axis, least to most
 # deprived on x-axis)
@@ -699,7 +713,6 @@ ggplot(df_plot, aes(x = IMD_decile, y = indoor_pm25)) +
     y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
   ) +
   theme_bw()
-
 
 ```
 
@@ -759,12 +772,7 @@ ggplot(df_plot, aes(x = co2, y = io_ratio, colour = factor(Year))) +
     ) +
     theme_bw()
 
-
-
-
-
 ```
-
 
 ```{r}
 # Figure 9: Annual mean I/O PM2.5 ratio by HEPA, Boxplot (with/without filters)
@@ -829,8 +837,4 @@ ggplot(df_plot, aes(x = HEPA, y = io_ratio)) +
 
 tt
 
-
 ```
-
-
-
