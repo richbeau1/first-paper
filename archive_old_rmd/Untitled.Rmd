@@ -1,0 +1,753 @@
+---
+title: "1st paper"
+output: html_document
+date: "2026-02-17"
+---
+
+```{r setup}
+# ---- Setup ----
+# Run this chunk first. It loads packages and sets the project folder. 
+
+pacman::p_load(
+  dplyr,
+  tidyr,
+  ggplot2,
+  openair,
+  sf,
+  lubridate,
+  rnaturalearth,
+  ggpubr,
+  viridis
+)
+
+# Project folder containing this Rmd and analysis_core_objects.RData
+setwd("/Users/richardbeaumont/R_projects/1st_Paper")
+
+# Optional output folder for figures
+fig_dir <- "figures"
+dir.create(fig_dir, showWarnings = FALSE)
+```
+
+```{r load_saved_core_objects}
+# ---- Active data-loading workflow ----
+# This project now uses a saved local analysis object instead of re-querying ULC.
+# Keep analysis_core_objects.RData in the project folder and back it up to the Sheffield X drive.
+
+load("analysis_core_objects.RData")
+
+# Required objects for all figures in this document.
+required_objects <- c("In_Out_24", "In_Out_SchHrs", "df_school_chars")
+missing_objects <- required_objects[!vapply(required_objects, exists, logical(1))]
+
+if (length(missing_objects) > 0) {
+  stop(
+    "Missing required object(s): ",
+    paste(missing_objects, collapse = ", "),
+    ". Check that analysis_core_objects.RData is in the working directory and contains the core datasets."
+  )
+}
+
+# Quick size check, useful on a 24 GB RAM machine.
+print(sort(
+  sapply(required_objects, function(x) object.size(get(x))),
+  decreasing = TRUE
+), units = "auto")
+```
+
+```{r database_notes_original, eval=FALSE}
+# ---- Original database notes retained for provenance only ----
+# These chunks are not run. They require the original source files, VPN/database access, and credentials.
+
+# first check that db_credentials.txt file has the correct passwords and tokens in it,
+# then check the code to make sure the correct root and working directory is specified.
+# If using RStudio, the working directory should be set to the folder containing this script
+# and the other core files.
+```
+
+```{r load_relational_tables_original, eval=FALSE}
+# ---- Original database-loading chunk retained for provenance only ----
+
+setwd("/Users/richardbeaumont/R_projects/1st_Paper/SAMHE_core_files")
+source("SAMHE_relational_tables.R")
+source("load_external_tables.R")
+```
+
+```{r load_samhe_dataset_original, eval=FALSE}
+# ---- Original SAMHE-loading chunk retained for provenance only ----
+
+source("load_SAMHE_dataset.R")
+```
+
+```{r analysis_note, echo=FALSE}
+# Derived datasets are created inside the figure chunk where they are used.
+# This keeps each figure self-contained and avoids hidden dependencies.
+```
+
+```{r figure_1_map}
+# Figure 1: Map of identified SAMHE sites and corresponding DEFRA/AURN sites.
+
+fig1_pairs <- In_Out_24 %>%
+  distinct(SchoolId_short, site, .keep_all = TRUE) %>% 
+  select(
+    SchoolId_short,
+    SAMHE_lon = SchoolLongitude,
+    SAMHE_lat = SchoolLatitude,
+    AURN_site = site,
+    AURN_lon  = longitude,
+    AURN_lat  = latitude,
+    distance_km = km_distance_to_AURN
+  ) %>%
+  filter(!is.na(SAMHE_lat), !is.na(AURN_lat), !is.na(distance_km))
+
+fig1_dist_stats <- fig1_pairs %>%
+  summarise(
+    n_schools = n_distinct(SchoolId_short),
+    mean_km   = mean(distance_km, na.rm = TRUE),
+    median_km = median(distance_km, na.rm = TRUE),
+    min_km    = min(distance_km, na.rm = TRUE),
+    max_km    = max(distance_km, na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+fig1_stats_label <- paste0(
+  "n = ", fig1_dist_stats$n_schools, "\n",
+  "Mean = ", round(fig1_dist_stats$mean_km, 1), " km\n",
+  "Median = ", round(fig1_dist_stats$median_km, 1), " km\n",
+  "Range = ", round(fig1_dist_stats$min_km, 1), "–", round(fig1_dist_stats$max_km, 0), " km"
+)
+
+fig1_samhe_sf <- st_as_sf(fig1_pairs, coords = c("SAMHE_lon", "SAMHE_lat"),
+                          crs = 4326, remove = FALSE)
+
+fig1_aurn_sf <- st_as_sf(fig1_pairs, coords = c("AURN_lon", "AURN_lat"),
+                         crs = 4326, remove = FALSE)
+
+fig1_lines_sf <- st_as_sf(
+  fig1_pairs %>%
+    rowwise() %>%
+    mutate(geometry = st_sfc(
+      st_linestring(matrix(c(SAMHE_lon, SAMHE_lat, AURN_lon, AURN_lat),
+                           ncol = 2, byrow = TRUE)),
+      crs = 4326
+    )) %>%
+    ungroup(),
+  crs = 4326
+)
+
+uk <- rnaturalearth::ne_states(country = "United Kingdom", returnclass = "sf")
+
+ggplot() +
+  geom_sf(data = uk, fill = "grey95", colour = "grey50", linewidth = 0.3) +
+  geom_sf(data = fig1_lines_sf, colour = "grey65", linewidth = 0.25, alpha = 0.5) +
+  geom_sf(data = fig1_aurn_sf, shape = 21, fill = "white", colour = "black",
+          size = 1.0, stroke = 0.3) +
+  geom_sf(data = fig1_samhe_sf, colour = "black", shape = 16, size = 1.5, alpha = 0.5) +
+  geom_sf(data = fig1_samhe_sf, aes(color = distance_km), shape = 16, size = 1.3, alpha = 0.5) +
+  coord_sf(xlim = c(-8.5, 2.5), ylim = c(49.5, 60.9), clip = "off") +
+  scale_color_viridis_c(
+    trans = "log10",
+    option = "viridis",
+    breaks = c(1, 10, 100),
+    labels = c("1", "10", "100 km"),
+    name = "Distance to nearest AURN"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = c(1.1, 0.8),
+    legend.justification = c(1, 0.5),
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 9),
+    plot.margin = margin(5.5, 95, 5.5, 5.5)
+  ) +
+  annotate("text", x = 0.5, y = 57.4, label = fig1_stats_label,
+           hjust = 0, vjust = 1, size = 3.5) +
+  annotate("point", x = 0.65, y = 57.8, shape = 21,
+           colour = "black", fill = "white", size = 1.5, stroke = 0.5) +
+  annotate("text", x = 0.8, y = 57.8, label = "  AURN sites",
+           hjust = 0, size = 3.5)
+
+ggsave(file.path(fig_dir, "Figure_1_SAMHE_AURN_pairing_map.png"), width = 6, height = 4, dpi = 300)
+```
+
+```{r daily_time_series}
+# Daily mean indoor/outdoor PM2.5 time series.
+
+daily_pm25 <- In_Out_24 %>%
+  mutate(date = as.Date(DateTime)) %>%
+  group_by(date) %>%
+  summarise(
+    Indoor_mean   = mean(pm02, na.rm = TRUE),
+    Indoor_q25    = quantile(pm02, 0.25, na.rm = TRUE),
+    Indoor_q75    = quantile(pm02, 0.75, na.rm = TRUE),
+    Outdoor_mean  = mean(pm2.5, na.rm = TRUE),
+    Outdoor_q25   = quantile(pm2.5, 0.25, na.rm = TRUE),
+    Outdoor_q75   = quantile(pm2.5, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -date,
+    names_to = c("site", ".value"),
+    names_pattern = "(Indoor|Outdoor)_(mean|q25|q75)"
+  )
+
+
+daily_r2_spearman <- cor(
+  daily_pm25$mean[daily_pm25$site == "Indoor"],
+  daily_pm25$mean[daily_pm25$site == "Outdoor"],
+  method = "spearman",
+  use = "complete.obs"
+)^2
+
+ggplot(daily_pm25, aes(x = date, y = mean, colour = site, fill = site)) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 0.25) +
+  scale_colour_manual(
+    values = c(Outdoor = "#E57200", Indoor = "#7A1FA2"),
+    labels = c(Outdoor = "Outdoor (DEFRA)", Indoor = "Indoor (SAMHE)")
+  ) +
+  scale_fill_manual(
+    values = c(Outdoor = "#E57200", Indoor = "#7A1FA2"),
+    labels = c(Outdoor = "Outdoor (DEFRA)", Indoor = "Indoor (SAMHE)")
+  ) +
+  annotate(
+    "text",
+    x = min(daily_pm25$date),
+    y = max(daily_pm25$mean, na.rm = TRUE),
+    label = paste0("R² = ", round(daily_r2_spearman, 2), ", p < 0.001"),
+    hjust = 0
+  ) +
+  labs(
+    x = "Date",
+    y = expression("Daily mean PM"[2.5]),
+    colour = NULL,
+    fill = NULL
+  ) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b '%y") +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    aspect.ratio = 0.25
+  )
+
+ggsave(file.path(fig_dir, "Daily_mean_indoor_outdoor_PM25_timeseries.png"), width = 12, height = 4, dpi = 300)
+```
+
+```{r figure_2_timevariation, message=FALSE, warning=FALSE}
+# Figure 2 supplementary: openair timeVariation of hourly indoor and outdoor PM2.5.
+
+fig2_hourly_all <- In_Out_24 %>%
+  mutate(date = floor_date(DateTime, "hour")) %>%
+  group_by(date) %>%
+  summarise(
+    indoor  = mean(pm02, na.rm = TRUE),
+    outdoor = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+timeVariation(
+  fig2_hourly_all,
+  pollutant = c("indoor", "outdoor"),
+  normalise = FALSE,
+  statistic = "mean",
+  cols = c("#7A1FA2", "#E57200"),
+  main = "Hourly mean PM2.5 across schools and nearest AURN sites"
+)
+ggsave(file.path(fig_dir, "Figure_2_daily_indoor_outdoor_PM25_timeseries.png"), width = 12, height = 3, dpi = 300)
+```
+
+```{r figure_2_scatter_all_time_openair}
+# Figure 2: annual mean indoor vs outdoor PM2.5, all-time dataset.
+
+fig2_annual_all <- In_Out_24 %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(indoor_pm25), is.finite(outdoor_pm25))
+
+
+fig2_r_all <- cor(fig2_annual_all$outdoor_pm25, fig2_annual_all$indoor_pm25)
+fig2_p_all <- cor.test(fig2_annual_all$outdoor_pm25,
+                       fig2_annual_all$indoor_pm25)$p.value
+
+scatterPlot(
+  fig2_annual_all,
+  x = "outdoor_pm25",
+  y = "indoor_pm25",
+  linear = TRUE,
+  cor = TRUE,
+  xlim = c(0, 20),
+  ylim = c(0, 20),
+  aspect = 1,
+  main = "2023–2025 Indoor vs Outdoor PM2.5 (all time)"
+)
+ggsave(file.path(fig_dir, "Figure_2_annual_indoor_vs_outdoor_PM25_all_time.png"), width = 6, height = 6, dpi = 300)
+```
+
+```{r figure_2_scatter_all_time_year}
+# Figure 2 check: annual school-year indoor vs outdoor PM2.5, coloured by year.
+
+fig2_annual_all_year <- In_Out_24 %>%
+  mutate(Year = factor(format(DateTime, "%Y"))) %>%
+  filter(Year %in% c("2023", "2024", "2025")) %>%
+  group_by(SchoolId_short, Year) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(indoor_pm25), is.finite(outdoor_pm25))
+
+
+ggplot(fig2_annual_all_year, aes(x = outdoor_pm25, y = indoor_pm25, colour = Year)) +
+  geom_point(shape = 1, size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.8) +
+  coord_fixed(ratio = 1, xlim = c(0, 20), ylim = c(0, 20)) +
+  labs(
+    title = "2023–2025 Indoor vs Outdoor PM2.5 (all time)",
+    x = expression("Outdoor PM"[2.5]),
+    y = expression("Indoor PM"[2.5]),
+    colour = "Year"
+  ) +
+  theme_minimal()
+
+ggsave(file.path(fig_dir, "Figure_2_annual_indoor_vs_outdoor_PM25_by_year.png"), width = 6, height = 6, dpi = 300)
+```
+
+```{r figure_2_scatter_school_hours_openair}
+# Figure 2: annual mean indoor vs outdoor PM2.5, school-hours dataset.
+
+fig2_annual_schhrs <- In_Out_SchHrs %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(indoor_pm25), is.finite(outdoor_pm25))
+
+
+fig2_r_sch <- cor(fig2_annual_schhrs$outdoor_pm25, fig2_annual_schhrs$indoor_pm25)
+fig2_p_sch <- cor.test(fig2_annual_schhrs$outdoor_pm25,
+                       fig2_annual_schhrs$indoor_pm25)$p.value
+
+scatterPlot(
+  fig2_annual_schhrs,
+  x = "outdoor_pm25",
+  y = "indoor_pm25",
+  linear = TRUE,
+  cor = TRUE,
+  xlim = c(0, 20),
+  ylim = c(0, 20),
+  aspect = 1,
+  main = "2023–2025 Indoor vs Outdoor PM2.5 (school hours)"
+)
+ggsave(file.path(fig_dir, "Figure_2_annual_indoor_vs_outdoor_PM25_school_hours.png"), width = 6, height = 6, dpi = 300)
+```
+
+```{r figure_3_annual_io}
+# Figure 3: annual school-year I/O ratio vs outdoor PM2.5.
+
+fig3_io_annual <- In_Out_SchHrs %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short, Year) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(indoor_pm25), is.finite(outdoor_pm25), outdoor_pm25 > 0) %>%
+  mutate(
+    io_ratio = indoor_pm25 / outdoor_pm25,
+    Year = factor(Year)
+  ) %>%
+  filter(is.finite(io_ratio), io_ratio > 0)
+
+
+fig3_cor <- cor.test(fig3_io_annual$outdoor_pm25,
+                     fig3_io_annual$io_ratio,
+                     method = "pearson")
+fig3_lm <- lm(io_ratio ~ outdoor_pm25, data = fig3_io_annual)
+
+fig3_stats_label <- paste0(
+  "n = ", nrow(fig3_io_annual),
+  "\nPearson r = ", round(unname(fig3_cor$estimate), 2),
+  "\np = ", format.pval(fig3_cor$p.value, digits = 2, eps = 0.001),
+  "\nR² = ", round(summary(fig3_lm)$r.squared, 2)
+)
+
+ggplot(fig3_io_annual, aes(x = outdoor_pm25, y = io_ratio, colour = Year)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(aes(group = 1), method = "lm", se = TRUE, colour = "black") +
+  annotate("text", x = Inf, y = Inf, label = fig3_stats_label,
+           hjust = 1.05, vjust = 1.2, size = 5) +
+  coord_cartesian(ylim = c(0, 2)) +
+  labs(
+    x = "Annual mean outdoor PM2.5 (µg m-3)",
+    y = "Annual mean I/O ratio",
+    colour = "Year",
+    title = "Annual mean I/O ratio vs outdoor PM2.5 (2023–2025)"
+  ) +
+  theme_minimal(base_size = 14)
+ggsave(file.path(fig_dir, "Figure_3_annual_school_year_IO_ratio_vs_outdoor_PM25.png"), width = 6, height = 6, dpi = 300)
+```
+
+```{r figure_3_seasonal_io}
+# Figure 3 seasonal: seasonal I/O ratio vs outdoor PM2.5.
+
+fig3_io_seasonal <- In_Out_SchHrs %>%
+  mutate(
+    date = as.Date(DateTime),
+    Year = year(date),
+    Month = month(date),
+    Season = case_when(
+      Month %in% c(12, 1, 2)  ~ "Winter",
+      Month %in% c(3, 4, 5)   ~ "Spring",
+      Month %in% c(6, 7, 8)   ~ "Summer",
+      Month %in% c(9, 10, 11) ~ "Autumn"
+    ),
+    Season = factor(Season, levels = c("Winter", "Spring", "Summer", "Autumn"))
+  ) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short, Year, Season) %>%
+  summarise(
+    indoor   = mean(pm02, na.rm = TRUE),
+    outdoor  = mean(pm2.5, na.rm = TRUE),
+    IO_ratio = indoor / outdoor,
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(IO_ratio), is.finite(outdoor), outdoor > 0, IO_ratio > 0) %>%
+  mutate(Year = factor(Year))
+
+
+fig3_season_stats <- fig3_io_seasonal %>%
+  group_by(Season) %>%
+  summarise(
+    r = cor(outdoor, IO_ratio, use = "complete.obs"),
+    r2 = summary(lm(IO_ratio ~ outdoor))$r.squared,
+    n = n(),
+    label = paste0("n = ", n, "\nr = ", round(r, 2), "\nR² = ", round(r2, 2)),
+    x = Inf,
+    y = Inf,
+    .groups = "drop"
+  )
+
+ggplot(fig3_io_seasonal, aes(x = outdoor, y = IO_ratio, colour = Year)) +
+  geom_point(alpha = 0.5, size = 0.9) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, colour = "black") +
+  facet_wrap(~Season) +
+  geom_text(
+    data = fig3_season_stats,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    vjust = 1.1,
+    size = 3.5
+  ) +
+  coord_cartesian(xlim = c(0, 20), ylim = c(0, 2)) +
+  labs(
+    x = "Seasonal mean outdoor PM2.5 (µg m-3)",
+    y = "Seasonal mean I/O ratio",
+    colour = "Year",
+    title = "Seasonal I/O ratio vs outdoor PM2.5 (school hours, 2023–2025)"
+  ) +
+  theme_minimal(base_size = 14)
+ggsave(file.path(fig_dir, "Figure_3_seasonal_IO_ratio_vs_outdoor_PM25.png"), width = 8, height = 6, dpi = 300)
+```
+
+```{r figure_4_ventilation_type}
+# Figure 4: Indoor PM2.5 vs ventilation type.
+
+fig4_ventilation <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25 = mean(pm02, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, BuildingEnvironment) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(BuildingEnvironment), is.finite(indoor_pm25))
+
+fig4_anova <- aov(indoor_pm25 ~ BuildingEnvironment, data = fig4_ventilation)
+fig4_anova_tab <- summary(fig4_anova)[[1]]
+fig4_f <- round(fig4_anova_tab$`F value`[1], 2)
+fig4_p <- signif(fig4_anova_tab$`Pr(>F)`[1], 2)
+
+fig4_n <- fig4_ventilation %>%
+  count(BuildingEnvironment)
+
+fig4_ymax <- max(fig4_ventilation$indoor_pm25, na.rm = TRUE)
+
+ggplot(fig4_ventilation, aes(x = BuildingEnvironment, y = indoor_pm25)) +
+  geom_boxplot() +
+  geom_text(
+    data = fig4_n,
+    aes(x = BuildingEnvironment, y = fig4_ymax * 1.03, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = fig4_ymax * 1.12,
+    hjust = 0,
+    label = paste0("ANOVA: F = ", fig4_f, ", p = ", fig4_p),
+    size = 4
+  ) +
+  labs(
+    x = "Ventilation type",
+    y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+summary(fig4_anova)
+
+ggsave(file.path(fig_dir, "Figure_4_indoor_PM25_by_ventilation_type.png"), width = 7, height = 5, dpi = 300)
+```
+
+```{r figure_4_ventilation_group}
+# Figure 4 alternative: grouped ventilation comparison.
+
+fig4_vent_group <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25 = mean(pm02, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, BuildingEnvironment) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(BuildingEnvironment), is.finite(indoor_pm25)) %>%
+  mutate(
+    Vent_group = case_when(
+      BuildingEnvironment %in% c("Heating and Mechanical Ventilation", "Air Conditioning") ~ "Mechanical",
+      BuildingEnvironment == "Heating and Natural Ventilation" ~ "Natural",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(Vent_group))
+
+fig4_vent_ttest <- t.test(indoor_pm25 ~ Vent_group, data = fig4_vent_group)
+fig4_vent_p <- signif(fig4_vent_ttest$p.value, 2)
+
+fig4_vent_n <- fig4_vent_group %>%
+  count(Vent_group)
+
+fig4_vent_ymax <- max(fig4_vent_group$indoor_pm25, na.rm = TRUE)
+
+ggplot(fig4_vent_group, aes(x = Vent_group, y = indoor_pm25)) +
+  geom_boxplot() +
+  geom_text(
+    data = fig4_vent_n,
+    aes(x = Vent_group, y = fig4_vent_ymax * 1.03, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = fig4_vent_ymax * 1.12,
+    hjust = 0,
+    label = paste0(
+      "t-test p = ", fig4_vent_p, "\n",
+      "Mechanical = Heating & Mechanical Ventilation + Air Conditioning\n",
+      "Natural = Heating & Natural Ventilation"
+    ),
+    size = 4
+  ) +
+  labs(
+    x = "Ventilation group",
+    y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
+  ) +
+  theme_bw()
+ggsave(file.path(fig_dir, "Figure_4_indoor_PM25_by_ventilation_group.png"), width = 6, height = 4, dpi = 300)
+
+fig4_vent_ttest
+```
+
+```{r figure_5_imd}
+# Figure 5: Indoor PM2.5 vs IMD decile.
+
+fig5_imd <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25 = mean(pm02, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, IMD_decile) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(IMD_decile), is.finite(indoor_pm25)) %>%
+  mutate(IMD_decile = factor(IMD_decile, levels = 1:10))
+
+fig5_spearman <- cor.test(
+  fig5_imd$indoor_pm25,
+  as.numeric(as.character(fig5_imd$IMD_decile)),
+  method = "spearman"
+)
+
+fig5_rho <- round(unname(fig5_spearman$estimate), 2)
+fig5_p <- signif(fig5_spearman$p.value, 2)
+
+fig5_n <- fig5_imd %>%
+  count(IMD_decile)
+
+fig5_ymax <- max(fig5_imd$indoor_pm25, na.rm = TRUE)
+
+ggplot(fig5_imd, aes(x = IMD_decile, y = indoor_pm25)) +
+  geom_boxplot(outlier.shape = NA, fill = "grey85") +
+  geom_jitter(width = 0.15, alpha = 0.3, size = 1) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 2.5, fill = "black") +
+  geom_text(
+    data = fig5_n,
+    aes(x = IMD_decile, y = fig5_ymax * 1.05, label = paste0("n=", n)),
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = fig5_ymax * 1.15,
+    hjust = 0,
+    label = paste0("Spearman ρ = ", fig5_rho, "\np = ", fig5_p),
+    size = 4
+  ) +
+  labs(
+    x = "IMD decile (1 = most deprived, 10 = least deprived)",
+    y = expression("Annual mean indoor PM"[2.5]~"(µg/m"^3*")")
+  ) +
+  theme_bw()
+ggsave(file.path(fig_dir, "Figure_5_indoor_PM25_by_IMD_decile.png"), width = 7, height = 5, dpi = 300)
+```
+
+```{r figure_8_co2_io}
+# Figure 8: CO2 vs I/O PM2.5 ratio.
+
+fig8_co2_io <- In_Out_SchHrs %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year %in% 2023:2025) %>%
+  group_by(SchoolId_short, Year) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    co2          = mean(rco2, na.rm = TRUE),
+    io_ratio     = indoor_pm25 / outdoor_pm25,
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(io_ratio), is.finite(co2), outdoor_pm25 > 1, io_ratio < 5)
+
+fig8_stats <- fig8_co2_io %>%
+  group_by(Year) %>%
+  summarise(
+    rho = round(cor(co2, io_ratio, method = "spearman", use = "complete.obs"), 2),
+    p = signif(cor.test(co2, io_ratio, method = "spearman")$p.value, 2),
+    n = n(),
+    .groups = "drop"
+  )
+
+fig8_ymax <- max(fig8_co2_io$io_ratio, na.rm = TRUE)
+
+ggplot(fig8_co2_io, aes(x = co2, y = io_ratio, colour = factor(Year))) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE) +
+  annotate(
+    "text",
+    x = min(fig8_co2_io$co2, na.rm = TRUE),
+    y = fig8_ymax,
+    hjust = 0,
+    label = paste0(
+      paste0("Year ", fig8_stats$Year,
+             ": n=", fig8_stats$n,
+             ", ρ=", fig8_stats$rho,
+             ", p=", fig8_stats$p),
+      collapse = "\n"
+    )
+  ) +
+  labs(
+    x = "Mean CO2 (ppm)",
+    y = "Indoor / Outdoor PM2.5 ratio",
+    colour = "Year"
+  ) +
+  theme_bw()
+ggsave(file.path(fig_dir, "Figure_8_CO2_vs_IO_ratio.png"), width = 7, height = 5, dpi = 300)
+```
+
+```{r figure_9_hepa}
+# Figure 9: Annual mean I/O PM2.5 ratio by HEPA status.
+
+fig9_hepa <- In_Out_SchHrs %>%
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE),
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE),
+    io_ratio     = indoor_pm25 / outdoor_pm25,
+    .groups = "drop"
+  ) %>%
+  left_join(
+    df_school_chars %>%
+      select(SchoolId_short, MonitoringType) %>%
+      distinct(),
+    by = "SchoolId_short"
+  ) %>%
+  filter(!is.na(MonitoringType), is.finite(io_ratio)) %>%
+  mutate(
+    HEPA = case_when(
+      MonitoringType == 1 ~ "No HEPA",
+      MonitoringType == 2 ~ "HEPA",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(HEPA))
+
+fig9_ttest <- t.test(io_ratio ~ HEPA, data = fig9_hepa)
+fig9_p <- signif(fig9_ttest$p.value, 2)
+
+fig9_n <- fig9_hepa %>%
+  count(HEPA)
+
+fig9_ymax <- max(fig9_hepa$io_ratio, na.rm = TRUE)
+
+ggplot(fig9_hepa, aes(x = HEPA, y = io_ratio)) +
+  geom_boxplot() +
+  geom_text(
+    data = fig9_n,
+    aes(x = HEPA, y = fig9_ymax * 1.03, label = paste0("n=", n)),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  annotate(
+    "text",
+    x = 1,
+    y = fig9_ymax * 1.12,
+    hjust = 0,
+    label = paste0("t-test p = ", fig9_p),
+    size = 4
+  ) +
+  labs(
+    x = NULL,
+    y = "Annual mean indoor / outdoor PM2.5 ratio"
+  ) +
+  theme_bw()
+ggsave(file.path(fig_dir, "Figure_9_IO_ratio_by_HEPA_status.png"), width = 6, height = 4, dpi = 300)
+
+fig9_ttest
+```

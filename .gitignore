@@ -1,11 +1,18 @@
+# macOS
 .DS_Store
+
+# RStudio local files
 .Rproj.user/
-*.Rproj
 .Rhistory
 .RData
 .RDataTmp
+.RDataTmp*
 .Ruserdata
+
+# Large R/data objects
 *.RData
+*.Rdata
+*.rda
 *.rds
 *.csv
 *.qs
@@ -13,19 +20,37 @@
 *.parquet
 *.sqlite
 *.db
+
+# Credentials
 db_credentials.txt
 SAMHE_core_files/db_credentials.txt
-SAMHE_core_files/external_tables/
+
+# SAMHE data folders
 SAMHE_core_files/IAQ_monthly_outputs/
 SAMHE_core_files/OUT_OF_DATE_Cleaned_datasets/
+SAMHE_core_files/external_tables/
 SAMHE_core_files/term_nh_dates/
+
+# Old notes / temporary files
 issues running SAMHE data files .rtfd/
-SAMHE_core_files/ChangeLog.txt
-SAMHE_core_files/ReadMe.txt
-.RDataTmp*
-*.RData
-*.rds
-*.rda
+
+# Generated figures
 figures/
 SAMHE_core_files/*.png
-woodburning_mapping/
+
+# Contextual mapping raw and processed data
+contextual_mapping/ammonia_mapping/raw_data/
+contextual_mapping/ammonia_mapping/processed_data/
+contextual_mapping/woodburning_mapping/
+
+# Large raw spatial files
+*.asc
+*.tif
+*.tiff
+*.prj
+*.shp
+*.shx
+*.dbf
+*.gpkg
+*.geojson
+*.zip

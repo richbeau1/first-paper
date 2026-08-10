@@ -15,22 +15,24 @@ library(openair)
 library(sf)
 library(lubridate)
 library(rnaturalearth)
-library(ggpubr)
-library(viridis)
+library(ggpubr) 
+library(viridis) 
 
-setwd("/Users/richardbeaumont/R_projects/1st_Paper") # change this to your preferred wd 
+setwd("/Users/richardbeaumont/R_projects/1st_Paper")
 
 fig_dir <- "figures"
 dir.create(fig_dir, showWarnings = FALSE)
+who_pm25 <- 5 # WHO 2021 annual PM2.5 guideline concentration (µg m-3)
+sheffield_purple <- "#7A1FA2"
+defra_orange <- "#E57200"
 
-who_pm25 <- 5 # WHO 2021 annual PM2.5 guideline concentration (µg m-5)
 ```
 
 
 ```{r load_saved_core_objects}
 # ---- Load saved core analysis datasets ----
 # This project uses saved local analysis datasets instead of re-querying ULC.
-# Keep analysis_core_objects.RData in the project folder and back it up to the Sheffield X Drive.
+# Keep analysis_core_objects.RData in the project folder and back it up in Google-drive and to the Sheffield X Drive.
 
 load("analysis_core_objects.RData")
 
@@ -134,7 +136,7 @@ gc()
 ```
 
 
-```{r update_core_objects_once, eval=FALSE}
+```{r update_core_objects_once, eval=FALSE} 
 # ---- One-off maintenance chunk ----
 # Run only after recreating and checking In_Out_OutSchHrs.
 # This overwrites analysis_core_objects.RData.
