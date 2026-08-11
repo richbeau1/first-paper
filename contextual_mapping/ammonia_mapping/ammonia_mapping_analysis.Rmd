@@ -5,19 +5,11 @@ date: "2026-08-10"
 output: html_document
 ---
 
----
----
-title: "NAEI NH3 ammonia mapping"
-author: "Richard Beaumont"
-date: "2026-08-10"
-output: html_document
----
-
 ```{r ammonia_setup}
 # ---- Ammonia mapping setup ----
 # This workflow creates school-level NAEI NH3 emissions context variables.
 # It does not alter analysis_core_objects.RData.
-# It assumes the main paper datasets have already been loaded.
+# It assumes the main SAMHE/AURN datasets have already been loaded.
 
 library(dplyr)
 library(tidyr)
@@ -43,29 +35,52 @@ sheffield_purple <- "#7A1FA2"
 defra_orange <- "#E57200"
 ```
 
-```{r check_main_dataset}
-# ---- Check main school-hours dataset ----
-# The ammonia workflow uses the existing In_Out_SchHrs dataset directly.
+```{r check_approved_samhe_datasets}
+# ---- Check approved SAMHE/AURN datasets ----
+# The ammonia workflow uses the existing screened SAMHE/AURN datasets directly:
+# In_Out_24, In_Out_SchHrs, and In_Out_OutSchHrs.
+# No additional school-level exclusion rule is applied here.
 
-if (!exists("In_Out_SchHrs")) {
-  stop("In_Out_SchHrs is not loaded. Run the main paper setup/load chunks first.")
+required_objects <- c(
+  "In_Out_24",
+  "In_Out_SchHrs",
+  "In_Out_OutSchHrs"
+)
+
+missing_objects <- required_objects[
+  !required_objects %in% ls(envir = .GlobalEnv)
+]
+
+if (length(missing_objects) > 0) {
+  stop(
+    "The following required SAMHE/AURN datasets are not loaded: ",
+    paste(missing_objects, collapse = ", ")
+  )
 }
 
 required_columns <- c(
   "SchoolId_short",
   "SchoolLongitude",
   "SchoolLatitude",
+  "DateTime",
   "pm02",
   "pm2.5"
 )
 
-missing_columns <- setdiff(required_columns, names(In_Out_SchHrs))
-
-if (length(missing_columns) > 0) {
-  stop(
-    "In_Out_SchHrs is missing required column(s): ",
-    paste(missing_columns, collapse = ", ")
+for (object_name in required_objects) {
+  
+  missing_columns <- setdiff(
+    required_columns,
+    names(get(object_name, envir = .GlobalEnv))
   )
+  
+  if (length(missing_columns) > 0) {
+    stop(
+      object_name,
+      " is missing required column(s): ",
+      paste(missing_columns, collapse = ", ")
+    )
+  }
 }
 ```
 
@@ -78,12 +93,9 @@ list.files(
 )
 ```
 
-
-
-
 ```{r import_naei_nh3_2023_rasters}
 # ---- Import NAEI NH3 2023 GeoTIFF layers ----
-# NAEI 2023 is used because it is the latest complete NH3 emissions dataset available.
+# NAEI 2023 is used as the NH3 emissions/source-pressure context layer.
 
 naei_year <- 2023
 
@@ -122,8 +134,12 @@ naei_nh3_inventory <- tibble(
       TRUE ~ "unknown"
     )
   ) %>%
-  filter(sector != "unknown") %>%
-  arrange(sector)
+  filter(
+    sector != "unknown"
+  ) %>%
+  arrange(
+    sector
+  )
 
 naei_nh3_inventory
 
@@ -131,7 +147,9 @@ if (nrow(naei_nh3_inventory) == 0) {
   stop("No NAEI NH3 GeoTIFF files found in: ", naei_nh3_folder)
 }
 
-naei_nh3_rasters <- terra::rast(naei_nh3_inventory$file_path)
+naei_nh3_rasters <- terra::rast(
+  naei_nh3_inventory$file_path
+)
 
 names(naei_nh3_rasters) <- naei_nh3_inventory$sector
 
@@ -166,148 +184,172 @@ saveRDS(
 # ---- Extract NAEI NH3 emissions at schools and within buffers ----
 # Uses school coordinates already present in In_Out_SchHrs.
 # Creates school-level ammonia context tables.
-# Does not alter In_Out_SchHrs or analysis_core_objects.RData.
+# Does not alter the SAMHE/AURN datasets.
+# The gridcell value is the NAEI raster cell containing the school.
+# The 1, 2, 5, and 10 km values are mean raster values within circular buffers.
 
 naei_year <- 2023
 
-# ---- One coordinate row per school ----
+ammonia_extraction <- local({
 
-school_coordinates <- In_Out_SchHrs %>%
-  select(
-    SchoolId_short,
-    SchoolLongitude,
-    SchoolLatitude
-  ) %>%
-  filter(
-    !is.na(SchoolLongitude),
-    !is.na(SchoolLatitude)
-  ) %>%
-  group_by(SchoolId_short) %>%
-  summarise(
-    SchoolLongitude = first(SchoolLongitude),
-    SchoolLatitude = first(SchoolLatitude),
-    .groups = "drop"
+  # ---- One coordinate row per school ----
+
+  school_coordinates <- In_Out_SchHrs %>%
+    select(
+      SchoolId_short,
+      SchoolLongitude,
+      SchoolLatitude
+    ) %>%
+    filter(
+      !is.na(SchoolLongitude),
+      !is.na(SchoolLatitude)
+    ) %>%
+    group_by(SchoolId_short) %>%
+    summarise(
+      SchoolLongitude = first(SchoolLongitude),
+      SchoolLatitude = first(SchoolLatitude),
+      .groups = "drop"
+    )
+
+  # ---- Convert school coordinates to spatial points ----
+
+  school_coordinates_sf <- school_coordinates %>%
+    st_as_sf(
+      coords = c("SchoolLongitude", "SchoolLatitude"),
+      crs = 4326,
+      remove = FALSE
+    )
+
+  # ---- Transform school points to NAEI raster CRS ----
+
+  school_coordinates_bng <- st_transform(
+    school_coordinates_sf,
+    crs = terra::crs(naei_nh3_rasters)
   )
 
-# ---- Convert school coordinates to spatial points ----
-
-school_coordinates_sf <- school_coordinates %>%
-  st_as_sf(
-    coords = c("SchoolLongitude", "SchoolLatitude"),
-    crs = 4326,
-    remove = FALSE
+  school_vect <- terra::vect(
+    school_coordinates_bng
   )
 
-# ---- Transform school points to NAEI raster CRS ----
+  # ---- Gridcell extraction ----
 
-school_coordinates_bng <- st_transform(
-  school_coordinates_sf,
-  crs = terra::crs(naei_nh3_rasters)
-)
-
-school_vect <- terra::vect(school_coordinates_bng)
-
-# ---- Point extraction ----
-
-nh3_point_extract <- terra::extract(
-  naei_nh3_rasters,
-  school_vect
-) %>%
-  as_tibble() %>%
-  select(-ID)
-
-nh3_point_values <- bind_cols(
-  school_coordinates %>% select(SchoolId_short),
-  tibble(buffer_km = 0),
-  nh3_point_extract
-) %>%
-  pivot_longer(
-    cols = -c(SchoolId_short, buffer_km),
-    names_to = "sector",
-    values_to = "nh3_emission_value"
-  )
-
-# ---- Buffer extraction ----
-
-buffer_distances_m <- c(1000, 2000, 5000, 10000)
-
-extract_buffer_mean <- function(buffer_m) {
-  
-  school_buffers <- terra::buffer(
-    school_vect,
-    width = buffer_m
-  )
-  
-  buffer_extract <- terra::extract(
+  nh3_gridcell_extract <- terra::extract(
     naei_nh3_rasters,
-    school_buffers,
-    fun = mean,
-    na.rm = TRUE
+    school_vect
   ) %>%
     as_tibble() %>%
     select(-ID)
-  
-  bind_cols(
-    school_coordinates %>% select(SchoolId_short),
-    tibble(buffer_km = buffer_m / 1000),
-    buffer_extract
+
+  nh3_gridcell_values <- bind_cols(
+    school_coordinates %>%
+      select(SchoolId_short),
+    tibble(buffer_km = 0),
+    nh3_gridcell_extract
   ) %>%
     pivot_longer(
       cols = -c(SchoolId_short, buffer_km),
       names_to = "sector",
       values_to = "nh3_emission_value"
     )
-}
 
-nh3_buffer_values <- bind_rows(
-  lapply(buffer_distances_m, extract_buffer_mean)
-)
+  # ---- Buffer extraction ----
 
-# ---- Combine point and buffer values ----
-
-school_ammonia_context_long <- bind_rows(
-  nh3_point_values,
-  nh3_buffer_values
-) %>%
-  mutate(
-    year = naei_year,
-    sector_label = case_when(
-      sector == "02nonindustcomb" ~ "02 Non-industrial combustion",
-      sector == "03industcomb" ~ "03 Industrial combustion",
-      sector == "04prodprocess" ~ "04 Production processes",
-      sector == "06solvents" ~ "06 Solvents",
-      sector == "07roadtrans" ~ "07 Road transport",
-      sector == "08othertrans" ~ "08 Other transport",
-      sector == "09waste" ~ "09 Waste",
-      sector == "10agriculture" ~ "10 Agriculture",
-      sector == "11nature" ~ "11 Nature",
-      sector == "total" ~ "Total",
-      TRUE ~ sector
-    )
+  buffer_distances_m <- c(
+    1000,
+    2000,
+    5000,
+    10000
   )
 
-# ---- Wide version for joining later ----
-
-school_ammonia_context_wide <- school_ammonia_context_long %>%
-  mutate(
-    variable_name = paste0(
-      "nh3_",
-      sector,
-      "_",
-      ifelse(buffer_km == 0, "point", paste0(buffer_km, "km"))
+  extract_buffer_mean <- function(buffer_m) {
+    
+    school_buffers <- terra::buffer(
+      school_vect,
+      width = buffer_m
     )
-  ) %>%
-  select(
-    SchoolId_short,
-    variable_name,
-    nh3_emission_value
-  ) %>%
-  pivot_wider(
-    names_from = variable_name,
-    values_from = nh3_emission_value
+    
+    buffer_extract <- terra::extract(
+      naei_nh3_rasters,
+      school_buffers,
+      fun = mean,
+      na.rm = TRUE
+    ) %>%
+      as_tibble() %>%
+      select(-ID)
+    
+    bind_cols(
+      school_coordinates %>%
+        select(SchoolId_short),
+      tibble(buffer_km = buffer_m / 1000),
+      buffer_extract
+    ) %>%
+      pivot_longer(
+        cols = -c(SchoolId_short, buffer_km),
+        names_to = "sector",
+        values_to = "nh3_emission_value"
+      )
+  }
+
+  nh3_buffer_values <- bind_rows(
+    lapply(buffer_distances_m, extract_buffer_mean)
   )
 
-# ---- Save outputs locally ----
+  # ---- Combine gridcell and buffer values ----
+
+  school_ammonia_context_long <- bind_rows(
+    nh3_gridcell_values,
+    nh3_buffer_values
+  ) %>%
+    mutate(
+      year = naei_year,
+      sector_label = case_when(
+        sector == "02nonindustcomb" ~ "02 Non-industrial combustion",
+        sector == "03industcomb" ~ "03 Industrial combustion",
+        sector == "04prodprocess" ~ "04 Production processes",
+        sector == "06solvents" ~ "06 Solvents",
+        sector == "07roadtrans" ~ "07 Road transport",
+        sector == "08othertrans" ~ "08 Other transport",
+        sector == "09waste" ~ "09 Waste",
+        sector == "10agriculture" ~ "10 Agriculture",
+        sector == "11nature" ~ "11 Nature",
+        sector == "total" ~ "Total",
+        TRUE ~ sector
+      )
+    )
+
+  # ---- Wide version for joining later ----
+
+  school_ammonia_context_wide <- school_ammonia_context_long %>%
+    mutate(
+      variable_name = paste0(
+        "nh3_",
+        sector,
+        "_",
+        ifelse(buffer_km == 0, "gridcell", paste0(buffer_km, "km"))
+      )
+    ) %>%
+    select(
+      SchoolId_short,
+      variable_name,
+      nh3_emission_value
+    ) %>%
+    pivot_wider(
+      names_from = variable_name,
+      values_from = nh3_emission_value
+    )
+
+  list(
+    school_coordinates = school_coordinates,
+    school_ammonia_context_long = school_ammonia_context_long,
+    school_ammonia_context_wide = school_ammonia_context_wide
+  )
+})
+
+school_coordinates <- ammonia_extraction$school_coordinates
+school_ammonia_context_long <- ammonia_extraction$school_ammonia_context_long
+school_ammonia_context_wide <- ammonia_extraction$school_ammonia_context_wide
+
+rm(ammonia_extraction)
 
 saveRDS(
   school_ammonia_context_long,
@@ -318,6 +360,218 @@ saveRDS(
   school_ammonia_context_wide,
   file.path(ammonia_processed_dir, "school_ammonia_context_wide.rds")
 )
+
+school_ammonia_context_long %>%
+  count(
+    sector,
+    buffer_km
+  )
+
+school_ammonia_context_wide
+```
+
+```{r create_ammonia_pm25_results}
+# ---- Create one clean NH3-PM2.5 analysis object ----
+# Uses only the already-screened SAMHE/AURN datasets:
+# In_Out_24, In_Out_SchHrs, and In_Out_OutSchHrs.
+# No additional school-level exclusion criteria are applied.
+# Creates one main object: ammonia_pm25_results.
+
+ammonia_pm25_results <- local({
+
+  # ---- Add gridded-sector NH3 sum, excluding NAEI total ----
+  # This avoids mixing sector rasters with the NAEI total layer,
+  # because the total layer also includes point-source emissions.
+
+  school_ammonia_sector_sum_wide <- school_ammonia_context_long %>%
+    filter(
+      sector != "total"
+    ) %>%
+    group_by(
+      SchoolId_short,
+      buffer_km
+    ) %>%
+    summarise(
+      nh3_emission_value = sum(nh3_emission_value, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      variable_name = paste0(
+        "nh3_gridded_sector_sum_",
+        ifelse(buffer_km == 0, "gridcell", paste0(buffer_km, "km"))
+      )
+    ) %>%
+    select(
+      SchoolId_short,
+      variable_name,
+      nh3_emission_value
+    ) %>%
+    pivot_wider(
+      names_from = variable_name,
+      values_from = nh3_emission_value
+    )
+
+  school_ammonia_context_wide_extended <- school_ammonia_context_wide %>%
+    left_join(
+      school_ammonia_sector_sum_wide,
+      by = "SchoolId_short"
+    )
+
+  # ---- Function to summarise each approved SAMHE/AURN dataset ----
+
+  summarise_pm25_by_school <- function(data, period_label) {
+    
+    data %>%
+      group_by(SchoolId_short) %>%
+      summarise(
+        indoor_pm25_mean = mean(pm02, na.rm = TRUE),
+        indoor_pm25_median = median(pm02, na.rm = TRUE),
+        outdoor_pm25_mean = mean(`pm2.5`, na.rm = TRUE),
+        outdoor_pm25_median = median(`pm2.5`, na.rm = TRUE),
+        n_observations = n(),
+        n_days = n_distinct(as.Date(DateTime)),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        period = period_label,
+        io_ratio_mean = indoor_pm25_mean / outdoor_pm25_mean,
+        io_ratio_median = indoor_pm25_median / outdoor_pm25_median
+      )
+  }
+
+  # ---- Summarise approved SAMHE/AURN datasets and join NH3 context ----
+
+  school_pm25_ammonia <- bind_rows(
+    summarise_pm25_by_school(In_Out_24, "All hours"),
+    summarise_pm25_by_school(In_Out_SchHrs, "School hours"),
+    summarise_pm25_by_school(In_Out_OutSchHrs, "Out of school hours")
+  ) %>%
+    left_join(
+      school_ammonia_context_wide_extended,
+      by = "SchoolId_short"
+    )
+
+  # ---- NH3 variables to test ----
+
+  ammonia_variables <- c(
+    "nh3_total_1km",
+    "nh3_total_2km",
+    "nh3_total_5km",
+    "nh3_total_10km",
+    "nh3_gridded_sector_sum_1km",
+    "nh3_gridded_sector_sum_2km",
+    "nh3_gridded_sector_sum_5km",
+    "nh3_gridded_sector_sum_10km",
+    "nh3_10agriculture_1km",
+    "nh3_10agriculture_2km",
+    "nh3_10agriculture_5km",
+    "nh3_10agriculture_10km"
+  )
+
+  ammonia_variables <- ammonia_variables[
+    ammonia_variables %in% names(school_pm25_ammonia)
+  ]
+
+  # ---- Correlation analysis ----
+
+  correlation_results <- bind_rows(
+    lapply(
+      unique(school_pm25_ammonia$period),
+      function(period_name) {
+        
+        period_data <- school_pm25_ammonia %>%
+          filter(period == period_name)
+        
+        bind_rows(
+          lapply(
+            ammonia_variables,
+            function(ammonia_var) {
+              
+              test_data <- period_data %>%
+                select(
+                  nh3_value = all_of(ammonia_var),
+                  indoor_pm25_mean,
+                  indoor_pm25_median,
+                  outdoor_pm25_mean,
+                  outdoor_pm25_median,
+                  io_ratio_mean,
+                  io_ratio_median
+                ) %>%
+                filter(
+                  is.finite(nh3_value),
+                  is.finite(indoor_pm25_mean),
+                  is.finite(indoor_pm25_median),
+                  is.finite(outdoor_pm25_mean),
+                  is.finite(outdoor_pm25_median),
+                  is.finite(io_ratio_mean),
+                  is.finite(io_ratio_median)
+                )
+              
+              indoor_mean_test <- cor.test(
+                test_data$nh3_value,
+                test_data$indoor_pm25_mean,
+                method = "spearman",
+                exact = FALSE
+              )
+              
+              indoor_median_test <- cor.test(
+                test_data$nh3_value,
+                test_data$indoor_pm25_median,
+                method = "spearman",
+                exact = FALSE
+              )
+              
+              outdoor_mean_test <- cor.test(
+                test_data$nh3_value,
+                test_data$outdoor_pm25_mean,
+                method = "spearman",
+                exact = FALSE
+              )
+              
+              io_mean_test <- cor.test(
+                test_data$nh3_value,
+                test_data$io_ratio_mean,
+                method = "spearman",
+                exact = FALSE
+              )
+              
+              tibble(
+                period = period_name,
+                ammonia_variable = ammonia_var,
+                n_schools = nrow(test_data),
+                rho_indoor_pm25_mean = unname(indoor_mean_test$estimate),
+                p_indoor_pm25_mean = indoor_mean_test$p.value,
+                rho_indoor_pm25_median = unname(indoor_median_test$estimate),
+                p_indoor_pm25_median = indoor_median_test$p.value,
+                rho_outdoor_pm25_mean = unname(outdoor_mean_test$estimate),
+                p_outdoor_pm25_mean = outdoor_mean_test$p.value,
+                rho_io_ratio_mean = unname(io_mean_test$estimate),
+                p_io_ratio_mean = io_mean_test$p.value
+              )
+            }
+          )
+        )
+      }
+    )
+  ) %>%
+    arrange(
+      period,
+      p_indoor_pm25_mean
+    )
+
+  list(
+    school_ammonia_context_wide_extended = school_ammonia_context_wide_extended,
+    school_pm25_ammonia = school_pm25_ammonia,
+    correlations = correlation_results
+  )
+})
+
+saveRDS(
+  ammonia_pm25_results,
+  file.path(ammonia_processed_dir, "ammonia_pm25_results.rds")
+)
+
+ammonia_pm25_results$correlations
 ```
 
 ```{r map_samhe_schools_nh3_1km}
@@ -596,84 +850,111 @@ ggsave(
 ```
 
 
-
-
-
 ```{r plot_naei_nh3_sector_boxplot_1km}
 # ---- Boxplot of NAEI NH3 emissions by source sector ----
 # Uses the 1 km buffer around each school.
-# Excludes total because total is the sum of sectors and point sources.
-# Units are tonnes NH3 km-2 yr-1.
+# Excludes total because total includes summed sector emissions and point-source emissions.
+# Values are emissions/source-pressure context, not measured ambient NH3 concentrations.
 
-nh3_sector_plot_data <- school_ammonia_context_long %>%
-  filter(
-    buffer_km == 1,
-    sector != "total",
-    !is.na(nh3_emission_value),
-    nh3_emission_value > 0
-  ) %>%
-  mutate(
-    sector_label = dplyr::recode(
-      sector,
-      `02nonindustcomb` = "Non-industrial combustion",
-      `03industcomb` = "Industrial combustion",
-      `04prodprocess` = "Production processes",
-      `06solvents` = "Solvents",
-      `07roadtrans` = "Road transport",
-      `08othertrans` = "Other transport",
-      `09waste` = "Waste",
-      `10agriculture` = "Agriculture",
-      `11nature` = "Nature"
+nh3_sector_boxplot_1km <- local({
+
+  nh3_sector_plot_data <- school_ammonia_context_long %>%
+    filter(
+      buffer_km == 1,
+      sector != "total",
+      !is.na(nh3_emission_value),
+      nh3_emission_value > 0
+    ) %>%
+    mutate(
+      sector_label = dplyr::recode(
+        sector,
+        `02nonindustcomb` = "Non-industrial combustion",
+        `03industcomb` = "Industrial combustion",
+        `04prodprocess` = "Production processes",
+        `06solvents` = "Solvents",
+        `07roadtrans` = "Road transport",
+        `08othertrans` = "Other transport",
+        `09waste` = "Waste",
+        `10agriculture` = "Agriculture",
+        `11nature` = "Nature"
+      )
     )
-  )
 
-nh3_sector_order <- nh3_sector_plot_data %>%
-  group_by(sector_label) %>%
-  summarise(
-    median_value = median(nh3_emission_value, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  arrange(desc(median_value)) %>%
-  pull(sector_label)
+  nh3_sector_order <- nh3_sector_plot_data %>%
+    group_by(sector_label) %>%
+    summarise(
+      median_value = median(nh3_emission_value, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(
+      desc(median_value)
+    ) %>%
+    pull(
+      sector_label
+    )
 
-nh3_sector_plot_data <- nh3_sector_plot_data %>%
-  mutate(
-    sector_label = factor(sector_label, levels = nh3_sector_order)
-  )
+  nh3_sector_plot_data <- nh3_sector_plot_data %>%
+    mutate(
+      sector_label = factor(
+        sector_label,
+        levels = nh3_sector_order
+      )
+    )
 
-nh3_sector_boxplot_1km <- ggplot(
-  nh3_sector_plot_data,
-  aes(x = sector_label, y = nh3_emission_value)
-) +
-  geom_boxplot(
-    fill = "grey85",
-    colour = "grey25",
-    outlier.shape = NA
+  ggplot(
+    nh3_sector_plot_data,
+    aes(
+      x = sector_label,
+      y = nh3_emission_value
+    )
   ) +
-  geom_jitter(
-    width = 0.15,
-    alpha = 0.25,
-    size = 0.6,
-    colour = sheffield_purple
-  ) +
-  scale_y_log10(
-    breaks = c(0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1),
-    labels = c("0.000001", "0.00001", "0.0001", "0.001", "0.01", "0.1", "1")
-  ) +
- labs(
-  title = expression("NAEI NH"[3]~"emissions within 1 km of SAMHE schools"),
-  subtitle = "Source-sector comparison using 2023 NAEI gridded emissions",
-  x = "NAEI source sector",
-  y = expression("Mean NAEI 2023 NH"[3]~"emissions value within 1 km buffer"),
-  caption = expression("Values are emissions/source-pressure context, not measured ambient NH"[3]~"concentration.")
-  ) +
-  theme_bw(base_size = 12) +
-  theme(
-    plot.title = element_text(hjust = 0.5),
-    axis.text.x = element_text(angle = 40, hjust = 1),
-    panel.grid.minor = element_blank(),
-    plot.caption = element_text(hjust = 0)
-  )
+    geom_boxplot(
+      fill = "grey85",
+      colour = "grey25",
+      outlier.shape = NA
+    ) +
+    geom_jitter(
+      width = 0.15,
+      alpha = 0.25,
+      size = 0.6,
+      colour = sheffield_purple
+    ) +
+    scale_y_log10(
+      breaks = c(
+        0.000001,
+        0.00001,
+        0.0001,
+        0.001,
+        0.01,
+        0.1,
+        1
+      ),
+      labels = c(
+        "0.000001",
+        "0.00001",
+        "0.0001",
+        "0.001",
+        "0.01",
+        "0.1",
+        "1"
+      )
+    ) +
+    labs(
+      title = expression("NAEI NH"[3]~"emissions within 1 km of SAMHE schools"),
+      subtitle = "Source-sector comparison using 2023 NAEI gridded emissions",
+      x = "NAEI source sector",
+      y = expression("Mean NAEI 2023 NH"[3]~"emissions value within 1 km buffer"),
+      caption = expression("Values are emissions/source-pressure context, not measured ambient NH"[3]~"concentration.")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5),
+      axis.text.x = element_text(angle = 40, hjust = 1),
+      panel.grid.minor = element_blank(),
+      plot.caption = element_text(hjust = 0)
+    )
+})
 
 nh3_sector_boxplot_1km
 
@@ -686,6 +967,313 @@ ggsave(
   width = 260,
   height = 180,
   units = "mm",
-  dpi = 300 
+  dpi = 300
 )
 ```
+
+
+```{r plot_school_hours_pm25_vs_nh3}
+# ---- Relationship between classroom PM2.5 and NAEI NH3 emissions context ----
+# Uses ammonia_pm25_results$school_pm25_ammonia.
+# One point = one school.
+# Primary outcome = mean school-hours classroom PM2.5.
+# Only positive NH3 values are plotted because the x-axis is log-scaled.
+
+nh3_pm25_correlation_plot <- local({
+
+  required_variables <- c(
+    "SchoolId_short",
+    "period",
+    "indoor_pm25_mean",
+    "nh3_total_1km",
+    "nh3_gridded_sector_sum_1km",
+    "nh3_10agriculture_1km"
+  )
+
+  missing_variables <- setdiff(
+    required_variables,
+    names(ammonia_pm25_results$school_pm25_ammonia)
+  )
+
+  if (length(missing_variables) > 0) {
+    stop(
+      "Missing required variable(s): ",
+      paste(missing_variables, collapse = ", ")
+    )
+  }
+
+  plot_data <- ammonia_pm25_results$school_pm25_ammonia %>%
+    filter(
+      period == "School hours"
+    ) %>%
+    select(
+      SchoolId_short,
+      indoor_pm25_mean,
+      nh3_total_1km,
+      nh3_gridded_sector_sum_1km,
+      nh3_10agriculture_1km
+    ) %>%
+    pivot_longer(
+      cols = starts_with("nh3_"),
+      names_to = "nh3_variable",
+      values_to = "nh3_value"
+    ) %>%
+    filter(
+      is.finite(indoor_pm25_mean),
+      is.finite(nh3_value),
+      nh3_value > 0
+    ) %>%
+    mutate(
+      nh3_variable = dplyr::recode(
+        nh3_variable,
+        nh3_10agriculture_1km = "Agriculture NH3",
+        nh3_gridded_sector_sum_1km = "Gridded sector NH3, excluding point sources",
+        nh3_total_1km = "Total NH3, including point sources"
+      ),
+      nh3_variable = factor(
+        nh3_variable,
+        levels = c(
+          "Agriculture NH3",
+          "Gridded sector NH3, excluding point sources",
+          "Total NH3, including point sources"
+        )
+      )
+    )
+
+  stats_data <- plot_data %>%
+    group_by(
+      nh3_variable
+    ) %>%
+    summarise(
+      n_schools = n(),
+      spearman_rho = cor(
+        nh3_value,
+        indoor_pm25_mean,
+        method = "spearman",
+        use = "complete.obs"
+      ),
+      p_value = cor.test(
+        nh3_value,
+        indoor_pm25_mean,
+        method = "spearman",
+        exact = FALSE
+      )$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      facet_label = paste0(
+        nh3_variable,
+        "\nSpearman rho = ",
+        round(spearman_rho, 3),
+        ", p = ",
+        signif(p_value, 3),
+        ", n = ",
+        n_schools
+      )
+    )
+
+  plot_data <- plot_data %>%
+    left_join(
+      stats_data %>%
+        select(
+          nh3_variable,
+          facet_label
+        ),
+      by = "nh3_variable"
+    )
+
+  ggplot(
+    plot_data,
+    aes(
+      x = nh3_value,
+      y = indoor_pm25_mean
+    )
+  ) +
+    geom_point(
+      alpha = 0.65,
+      size = 1.5,
+      colour = sheffield_purple
+    ) +
+    geom_smooth(
+      method = "lm",
+      se = TRUE,
+      colour = "grey25",
+      linewidth = 0.6
+    ) +
+    scale_x_log10() +
+    facet_wrap(
+      ~ facet_label,
+      scales = "free_x"
+    ) +
+    labs(
+      title = expression("School-hours classroom PM"[2.5]~"and NAEI NH"[3]~"emissions context"),
+      subtitle = "One point represents one school; NH3 variables use 1 km buffer means",
+      x = expression("NAEI 2023 NH"[3]~"emissions context within 1 km buffer (log scale)"),
+      y = expression("Mean school-hours classroom PM"[2.5]~"("*mu*"g m"^-3*")"),
+      caption = expression("NH"[3]~"values are emissions/source-pressure context, not measured ambient NH"[3]~"concentrations. Only positive NH"[3]~"values are shown because the x-axis is log-scaled. Correlations are school-level Spearman rank correlations.")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5),
+      strip.text = element_text(size = 9),
+      panel.grid.minor = element_blank(),
+      plot.caption = element_text(hjust = 0)
+    )
+})
+
+nh3_pm25_correlation_plot
+
+ggsave(
+  file.path(
+    ammonia_fig_dir,
+    "school_hours_classroom_PM25_vs_NAEI_NH3_1km.png"
+  ),
+  plot = nh3_pm25_correlation_plot,
+  width = 260,
+  height = 160,
+  units = "mm",
+  dpi = 300
+)
+```
+
+
+```{r plot_school_hours_pm25_vs_agriculture_nh3_buffers}
+# ---- School-hours classroom PM2.5 versus agricultural NH3 at multiple buffers ----
+# One point = one school.
+# Tests whether the NH3-PM2.5 relationship changes with buffer size.
+
+agri_nh3_pm25_buffer_plot <- local({
+
+  plot_data <- ammonia_pm25_results$school_pm25_ammonia %>%
+    filter(
+      period == "School hours"
+    ) %>%
+    select(
+      SchoolId_short,
+      indoor_pm25_mean,
+      nh3_10agriculture_1km,
+      nh3_10agriculture_2km,
+      nh3_10agriculture_5km,
+      nh3_10agriculture_10km
+    ) %>%
+    pivot_longer(
+      cols = starts_with("nh3_10agriculture_"),
+      names_to = "buffer",
+      values_to = "nh3_value"
+    ) %>%
+    filter(
+      is.finite(indoor_pm25_mean),
+      is.finite(nh3_value),
+      nh3_value > 0
+    ) %>%
+    mutate(
+      buffer = dplyr::recode(
+        buffer,
+        nh3_10agriculture_1km = "1 km",
+        nh3_10agriculture_2km = "2 km",
+        nh3_10agriculture_5km = "5 km",
+        nh3_10agriculture_10km = "10 km"
+      ),
+      buffer = factor(
+        buffer,
+        levels = c("1 km", "2 km", "5 km", "10 km")
+      )
+    )
+
+  stats_data <- plot_data %>%
+    group_by(buffer) %>%
+    summarise(
+      n_schools = n(),
+      spearman_rho = cor(
+        nh3_value,
+        indoor_pm25_mean,
+        method = "spearman",
+        use = "complete.obs"
+      ),
+      p_value = cor.test(
+        nh3_value,
+        indoor_pm25_mean,
+        method = "spearman",
+        exact = FALSE
+      )$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      facet_label = paste0(
+        buffer,
+        "\nSpearman rho = ",
+        round(spearman_rho, 3),
+        ", p = ",
+        signif(p_value, 3),
+        ", n = ",
+        n_schools
+      )
+    )
+
+  plot_data <- plot_data %>%
+    left_join(
+      stats_data %>%
+        select(buffer, facet_label),
+      by = "buffer"
+    )
+
+  ggplot(
+    plot_data,
+    aes(
+      x = nh3_value,
+      y = indoor_pm25_mean
+    )
+  ) +
+    geom_point(
+      alpha = 0.65,
+      size = 1.5,
+      colour = sheffield_purple
+    ) +
+    geom_smooth(
+      method = "lm",
+      se = TRUE,
+      colour = "grey25",
+      linewidth = 0.6
+    ) +
+    scale_x_log10() +
+    facet_wrap(
+      ~ facet_label,
+      scales = "free_x"
+    ) +
+    labs(
+      title = expression("School-hours classroom PM"[2.5]~"and agricultural NH"[3]~"emissions context"),
+      subtitle = "Agricultural NAEI 2023 NH3 tested using 1, 2, 5 and 10 km buffer means",
+      x = expression("NAEI 2023 agricultural NH"[3]~"emissions context (log scale)"),
+      y = expression("Mean school-hours classroom PM"[2.5]~"("*mu*"g m"^-3*")"),
+      caption = expression("NH"[3]~"values are emissions/source-pressure context, not measured ambient NH"[3]~"concentrations. Only positive NH"[3]~"values are shown because the x-axis is log-scaled. Correlations are school-level Spearman rank correlations.")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5),
+      strip.text = element_text(size = 9),
+      panel.grid.minor = element_blank(),
+      plot.caption = element_text(hjust = 0)
+    )
+})
+
+agri_nh3_pm25_buffer_plot
+
+ggsave(
+  file.path(
+    ammonia_fig_dir,
+    "school_hours_classroom_PM25_vs_agricultural_NH3_buffers.png"
+  ),
+  plot = agri_nh3_pm25_buffer_plot,
+  width = 260,
+  height = 180,
+  units = "mm",
+  dpi = 300
+)
+```
+
+
+
+
+
