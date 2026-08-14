@@ -398,6 +398,170 @@ saveRDS(
 ammonia_pm25_results$school_pm25_ammonia
 ```
 
+```{r high_agricultural_nh3_winter_summer}
+# ---- High agricultural NH3: winter versus summer school-hours PM2.5 ----
+# Tests whether schools in the top 25% of agricultural NH3 emissions context
+# have higher classroom PM2.5 in winter than summer.
+
+ammonia_pm25_results$high_nh3_winter_summer <- local({
+
+  nh3_variable <- "nh3_10agriculture_5km"
+
+  if (!nh3_variable %in% names(ammonia_school_context$wide)) {
+    stop(nh3_variable, " not found in ammonia_school_context$wide")
+  }
+
+  school_nh3 <- ammonia_school_context$wide %>%
+    dplyr::select(
+      SchoolId_short,
+      nh3_value = dplyr::all_of(nh3_variable)
+    ) %>%
+    dplyr::filter(
+      is.finite(nh3_value),
+      nh3_value > 0
+    )
+
+  nh3_75th_percentile <- quantile(
+    school_nh3$nh3_value,
+    probs = 0.75,
+    na.rm = TRUE
+  )
+
+  school_nh3 <- school_nh3 %>%
+    dplyr::mutate(
+      nh3_group = dplyr::if_else(
+        nh3_value >= nh3_75th_percentile,
+        "High agricultural NH3: top 25%",
+        "Lower agricultural NH3"
+      )
+    )
+
+  school_season_pm25 <- In_Out_SchHrs %>%
+    dplyr::mutate(
+      month = as.integer(format(DateTime, "%m")),
+      season = dplyr::case_when(
+        month %in% c(12, 1, 2) ~ "Winter",
+        month %in% c(6, 7, 8) ~ "Summer",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    dplyr::filter(
+      !is.na(season),
+      is.finite(pm02),
+      is.finite(`pm2.5`),
+      `pm2.5` > 0
+    ) %>%
+    dplyr::group_by(
+      SchoolId_short,
+      season
+    ) %>%
+    dplyr::summarise(
+      indoor_pm25_mean = mean(pm02, na.rm = TRUE),
+      outdoor_pm25_mean = mean(`pm2.5`, na.rm = TRUE),
+      n_observations = dplyr::n(),
+      n_days = dplyr::n_distinct(as.Date(DateTime)),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      io_ratio_mean = indoor_pm25_mean / outdoor_pm25_mean
+    ) %>%
+    dplyr::left_join(
+      school_nh3,
+      by = "SchoolId_short"
+    ) %>%
+    dplyr::filter(
+      !is.na(nh3_group)
+    )
+
+  summary_table <- school_season_pm25 %>%
+    dplyr::group_by(
+      season,
+      nh3_group
+    ) %>%
+    dplyr::summarise(
+      n_schools = dplyr::n_distinct(SchoolId_short),
+      mean_indoor_pm25 = mean(indoor_pm25_mean, na.rm = TRUE),
+      median_indoor_pm25 = median(indoor_pm25_mean, na.rm = TRUE),
+      mean_outdoor_pm25 = mean(outdoor_pm25_mean, na.rm = TRUE),
+      median_outdoor_pm25 = median(outdoor_pm25_mean, na.rm = TRUE),
+      mean_io_ratio = mean(io_ratio_mean, na.rm = TRUE),
+      median_io_ratio = median(io_ratio_mean, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(
+      season,
+      nh3_group
+    )
+
+  winter_summer_change <- school_season_pm25 %>%
+    dplyr::select(
+      SchoolId_short,
+      nh3_group,
+      season,
+      indoor_pm25_mean,
+      outdoor_pm25_mean,
+      io_ratio_mean
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = season,
+      values_from = c(
+        indoor_pm25_mean,
+        outdoor_pm25_mean,
+        io_ratio_mean
+      )
+    ) %>%
+    dplyr::filter(
+      is.finite(indoor_pm25_mean_Winter),
+      is.finite(indoor_pm25_mean_Summer)
+    ) %>%
+    dplyr::mutate(
+      indoor_pm25_winter_minus_summer =
+        indoor_pm25_mean_Winter - indoor_pm25_mean_Summer,
+      outdoor_pm25_winter_minus_summer =
+        outdoor_pm25_mean_Winter - outdoor_pm25_mean_Summer,
+      io_ratio_winter_minus_summer =
+        io_ratio_mean_Winter - io_ratio_mean_Summer
+    ) %>%
+    dplyr::group_by(
+      nh3_group
+    ) %>%
+    dplyr::summarise(
+      n_schools = dplyr::n_distinct(SchoolId_short),
+      mean_indoor_pm25_winter_minus_summer =
+        mean(indoor_pm25_winter_minus_summer, na.rm = TRUE),
+      median_indoor_pm25_winter_minus_summer =
+        median(indoor_pm25_winter_minus_summer, na.rm = TRUE),
+      mean_outdoor_pm25_winter_minus_summer =
+        mean(outdoor_pm25_winter_minus_summer, na.rm = TRUE),
+      median_outdoor_pm25_winter_minus_summer =
+        median(outdoor_pm25_winter_minus_summer, na.rm = TRUE),
+      mean_io_ratio_winter_minus_summer =
+        mean(io_ratio_winter_minus_summer, na.rm = TRUE),
+      median_io_ratio_winter_minus_summer =
+        median(io_ratio_winter_minus_summer, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    nh3_variable = nh3_variable,
+    nh3_75th_percentile = nh3_75th_percentile,
+    school_season_pm25 = school_season_pm25,
+    summary_table = summary_table,
+    winter_summer_change = winter_summer_change
+  )
+})
+
+saveRDS(
+  ammonia_pm25_results,
+  file.path(ammonia_processed_dir, "ammonia_pm25_results.rds")
+)
+
+ammonia_pm25_results$high_nh3_winter_summer$summary_table
+
+ammonia_pm25_results$high_nh3_winter_summer$winter_summer_change
+```
+
+
 ```{r ammonia_pm25_correlations}
 # ---- NH3-PM2.5 correlations ----
 # Tests indoor PM2.5, outdoor PM2.5 and I/O ratio against NH3 context.
