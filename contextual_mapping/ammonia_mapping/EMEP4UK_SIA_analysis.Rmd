@@ -244,4 +244,195 @@ cat(
   "\n"
 )
 ```
+```{r}
+## 4. Import measured AURN PM2.5 and calculate daily means
+
+aurn_hourly_2024 <- openair::importAURN(
+  site = aurn_sites_2024$code,
+  year = 2024
+) |>
+  dplyr::select(
+    code,
+    site,
+    date,
+    `pm2.5`
+  )
+
+# Calculate annual hourly data capture for each site
+aurn_capture_2024 <- aurn_hourly_2024 |>
+  dplyr::group_by(code, site) |>
+  dplyr::summarise(
+    valid_hours = sum(!is.na(`pm2.5`)),
+    capture_percent = 100 * valid_hours / (366 * 24),
+    .groups = "drop"
+  )
+
+valid_aurn_sites_2024 <- aurn_capture_2024 |>
+  dplyr::filter(capture_percent >= 75)
+
+# Calculate daily means requiring at least 75% hourly coverage
+aurn_daily_2024 <- openair::timeAverage(
+  aurn_hourly_2024,
+  avg.time = "day",
+  statistic = "mean",
+  data.thresh = 75,
+  type = c("site", "code"),
+  interval = "hour"
+) |>
+  dplyr::transmute(
+    code,
+    site,
+    date = as.Date(date),
+    aurn_pm25 = `pm2.5`
+  ) |>
+  dplyr::semi_join(
+    valid_aurn_sites_2024,
+    by = c("code", "site")
+  )
+
+saveRDS(
+  aurn_daily_2024,
+  file.path(
+    analysis_dir,
+    "processed_data",
+    "aurn_daily_pm25_2024.rds"
+  )
+)
+
+cat(
+  "Imported sites:", dplyr::n_distinct(aurn_hourly_2024$code),
+  "\nSites with at least 75% annual capture:",
+  nrow(valid_aurn_sites_2024),
+  "\nDaily records:", nrow(aurn_daily_2024),
+  "\nDate range:",
+  paste(range(aurn_daily_2024$date), collapse = " to "),
+  "\n"
+)
+```
+
+```{r}
+## 5. Match AURN observations with EMEP4UK and calculate annual means
+
+duplicate_aurn_keys <- sum(
+  duplicated(aurn_daily_2024[c("code", "date")])
+)
+
+duplicate_emep_keys <- sum(
+  duplicated(aurn_emep_2024[c("code", "date")])
+)
+
+if (duplicate_aurn_keys > 0 || duplicate_emep_keys > 0) {
+  stop("Duplicate site-date keys detected before joining.")
+}
+
+# Join measured and modelled daily concentrations
+aurn_emep_matched_all_2024 <- aurn_daily_2024 |>
+  dplyr::left_join(
+    aurn_emep_2024 |>
+      dplyr::select(
+        code,
+        date,
+        emep_pm25_rh50,
+        emep_sia
+      ),
+    by = c("code", "date")
+  )
+
+unmatched_model_rows <- sum(
+  is.na(aurn_emep_matched_all_2024$emep_pm25_rh50)
+)
+
+# Retain complete measured-modelled daily pairs
+aurn_emep_matched_2024 <- aurn_emep_matched_all_2024 |>
+  dplyr::filter(
+    !is.na(aurn_pm25),
+    !is.na(emep_pm25_rh50),
+    !is.na(emep_sia)
+  )
+
+# Calculate annual means at each AURN location
+aurn_emep_annual_all_2024 <- aurn_emep_matched_2024 |>
+  dplyr::group_by(code, site) |>
+  dplyr::summarise(
+    matched_days = dplyr::n(),
+    paired_capture_percent = 100 * matched_days / 366,
+    aurn_pm25_annual = mean(aurn_pm25, na.rm = TRUE),
+    emep_pm25_annual = mean(emep_pm25_rh50, na.rm = TRUE),
+    emep_sia_annual = mean(emep_sia, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    sia_percent_annual =
+      100 * emep_sia_annual / emep_pm25_annual
+  ) |>
+  dplyr::left_join(
+    aurn_sites_2024 |>
+      dplyr::select(
+        code,
+        site_type,
+        latitude,
+        longitude
+      ),
+    by = "code"
+  )
+
+# Require at least 75% paired daily coverage
+aurn_emep_annual_2024 <- aurn_emep_annual_all_2024 |>
+  dplyr::filter(paired_capture_percent >= 75)
+
+# Evaluate annual EMEP PM2.5 against measured AURN PM2.5
+annual_validation_stats_2024 <- openair::modStats(
+  aurn_emep_annual_2024,
+  obs = "aurn_pm25_annual",
+  mod = "emep_pm25_annual"
+)
+
+validation_output_2024 <- list(
+  daily_matched = aurn_emep_matched_2024,
+  annual_site_means = aurn_emep_annual_2024,
+  model_statistics = annual_validation_stats_2024
+)
+
+saveRDS(
+  validation_output_2024,
+  file.path(
+    analysis_dir,
+    "processed_data",
+    "aurn_emep_validation_2024.rds"
+  )
+)
+
+cat(
+  "Duplicate AURN keys:", duplicate_aurn_keys,
+  "\nDuplicate EMEP keys:", duplicate_emep_keys,
+  "\nAURN records without an EMEP match:", unmatched_model_rows,
+  "\nComplete matched site-days:", nrow(aurn_emep_matched_2024),
+  "\nSites retained:", nrow(aurn_emep_annual_2024),
+  "\nMatched-day range:",
+  paste(range(aurn_emep_annual_2024$matched_days), collapse = " to "),
+  "\n"
+)
+
+print(annual_validation_stats_2024)
+```
+
+```{r}
+## 6. Plot annual EMEP4UK validation against AURN observations
+
+annual_validation_plot_2024 <- openair::scatterPlot(
+  aurn_emep_annual_2024,
+  x = "aurn_pm25_annual",
+  y = "emep_pm25_annual",
+  linear = TRUE,
+  ci = TRUE,
+  mod.line = TRUE,
+  auto.text = FALSE,
+  xlab = "AURN observed annual mean PM2.5 (µg/m³)",
+  ylab = "EMEP4UK modelled annual mean PM2.5 (µg/m³)",
+  title = "Annual mean PM2.5: EMEP4UK and AURN",
+  subtitle = "77 background monitoring locations, 2024"
+)
+
+annual_validation_plot_2024
+```
 
