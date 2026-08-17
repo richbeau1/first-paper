@@ -1,0 +1,247 @@
+```{r}
+## 1. Open and inspect the EMEP4UK 2024 file
+
+library(terra)
+library(ncdf4)
+library(rstudioapi)
+
+# Find the folder containing this R Markdown file
+rmd_path <- getActiveDocumentContext()$path
+
+if (!nzchar(rmd_path)) {
+  stop(
+    "Save and open EMEP4UK_SIA_analysis.Rmd before running this code."
+  )
+}
+
+analysis_dir <- dirname(rmd_path)
+
+# Location of the downloaded NetCDF file
+emep_file <- file.path(
+  analysis_dir,
+  "raw_data",
+  "EMEP4UK_met2024_emis2023.nc"
+)
+
+if (!file.exists(emep_file)) {
+  stop("EMEP4UK file not found:\n", emep_file)
+}
+
+cat(
+  "File found:", basename(emep_file),
+  "\nFile size:", round(file.info(emep_file)$size / 1e9, 2), "GB\n"
+)
+
+# Limit terra's memory use and create a temporary working folder
+terra_temp <- file.path(
+  analysis_dir,
+  "processed_data",
+  "terra_temp"
+)
+
+dir.create(
+  terra_temp,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+terraOptions(
+  memfrac = 0.5,
+  tempdir = terra_temp,
+  progress = 1
+)
+
+# Read only the NetCDF header to identify available variables
+nc <- nc_open(
+  emep_file,
+  readunlim = FALSE
+)
+
+available_variables <- names(nc$var)
+
+nc_close(nc)
+rm(nc)
+
+# Variables relevant to the analysis
+variables_needed <- c(
+  "SURF_ug_PM25_rh50",  # total PM2.5
+  "SURF_ug_SIA",        # secondary inorganic aerosol
+  "SURF_ug_NH4_F",      # particulate ammonium
+  "SURF_ug_NO3_F",      # fine particulate nitrate
+  "SURF_ug_SO4",        # particulate sulfate
+  "SURF_ug_PPM25",      # primary PM2.5
+  "SURF_ug_NH3",        # gaseous ammonia
+  "HMIX",               # mixing-layer height
+  "WDEP_PREC"            # precipitation
+)
+
+variable_check <- data.frame(
+  variable = variables_needed,
+  available = variables_needed %in% available_variables
+)
+
+print(variable_check, row.names = FALSE)
+
+# Stop if the two essential variables are missing
+essential_variables <- c(
+  "SURF_ug_PM25_rh50",
+  "SURF_ug_SIA"
+)
+
+if (!all(essential_variables %in% available_variables)) {
+  stop("An essential PM2.5 or SIA variable is missing.")
+}
+
+# Open only total PM2.5 and SIA
+# The values remain stored in the NetCDF file, not loaded into RAM
+pm25_2024 <- rast(
+  emep_file,
+  subds = "SURF_ug_PM25_rh50"
+)
+
+sia_2024 <- rast(
+  emep_file,
+  subds = "SURF_ug_SIA"
+)
+
+# Check the resulting objects
+print(pm25_2024)
+print(sia_2024)
+
+cat(
+  "\nNumber of daily SIA layers:", nlyr(sia_2024),
+  "\nSpatial resolution:", paste(res(sia_2024), collapse = " × "),
+  "\nValues currently held in RAM:", inMemory(sia_2024),
+  "\n"
+)
+
+print(range(time(sia_2024)))
+
+# Display the first daily SIA map
+plot(
+  sia_2024[[1]],
+  main = "EMEP4UK secondary inorganic aerosol: first day"
+)
+```
+
+```{r}
+## 2. Select AURN background locations for PM2.5 validation
+
+background_types <- c(
+  "Urban Background",
+  "Suburban Background",
+  "Rural Background"
+)
+
+# Import complete AURN metadata
+aurn_meta_2024 <- openair::importMeta(
+  source = "aurn",
+  all = TRUE,
+  year = 2024
+)
+
+# Standardise column names
+names(aurn_meta_2024) <- gsub("\\.", "_", names(aurn_meta_2024))
+
+# Select background locations measuring PM2.5 during 2024
+aurn_sites_2024 <- aurn_meta_2024 |>
+  dplyr::filter(
+    grepl("^PM2\\.5", variable, ignore.case = TRUE),
+    site_type %in% background_types,
+    !is.na(latitude),
+    !is.na(longitude)
+  ) |>
+  dplyr::distinct(code, .keep_all = TRUE)
+
+# Convert locations to the EMEP projection
+aurn_points_2024 <- terra::vect(
+  aurn_sites_2024,
+  geom = c("longitude", "latitude"),
+  crs = "EPSG:4326"
+) |>
+  terra::project(terra::crs(sia_2024))
+
+cat("Selected AURN locations:", nrow(aurn_sites_2024), "\n")
+print(table(aurn_sites_2024$site_type))
+
+# Plot modelled SIA with AURN validation locations
+plot(
+  sia_2024[[1]],
+  main = paste(
+    "EMEP4UK modelled SIA with selected",
+    "AURN background monitoring locations",
+    "1 January 2024",
+    sep = "\n"
+  ),
+  plg = list(title = "SIA (ug/m3)")
+)
+
+plot(
+  aurn_points_2024,
+  add = TRUE,
+  pch = 21,
+  bg = "#E57200",
+  col = "white",
+  cex = 0.8
+)
+```
+
+```{r}
+## 3. Extract daily EMEP4UK values at AURN locations
+
+pm25_at_aurn <- terra::extract(
+  pm25_2024,
+  aurn_points_2024,
+  ID = FALSE
+)
+
+sia_at_aurn <- terra::extract(
+  sia_2024,
+  aurn_points_2024,
+  ID = FALSE
+)
+
+aurn_emep_2024 <- tidyr::expand_grid(
+  code = aurn_sites_2024$code,
+  date = as.Date(terra::time(pm25_2024))
+) |>
+  dplyr::mutate(
+    emep_pm25_rh50 = as.vector(t(as.matrix(pm25_at_aurn))),
+    emep_sia = as.vector(t(as.matrix(sia_at_aurn))),
+    sia_percent_pm25 = dplyr::if_else(
+      emep_pm25_rh50 > 0,
+      100 * emep_sia / emep_pm25_rh50,
+      NA_real_
+    )
+  ) |>
+  dplyr::left_join(
+    aurn_sites_2024 |>
+      dplyr::select(
+        code,
+        site,
+        site_type,
+        latitude,
+        longitude
+      ),
+    by = "code"
+  )
+
+saveRDS(
+  aurn_emep_2024,
+  file.path(
+    analysis_dir,
+    "processed_data",
+    "aurn_emep_2024.rds"
+  )
+)
+
+cat(
+  "Rows:", nrow(aurn_emep_2024),
+  "\nSites:", dplyr::n_distinct(aurn_emep_2024$code),
+  "\nDates:", paste(range(aurn_emep_2024$date), collapse = " to "),
+  "\nMissing PM2.5:", sum(is.na(aurn_emep_2024$emep_pm25_rh50)),
+  "\nMissing SIA:", sum(is.na(aurn_emep_2024$emep_sia)),
+  "\n"
+)
+```
+
