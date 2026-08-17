@@ -436,3 +436,513 @@ annual_validation_plot_2024 <- openair::scatterPlot(
 annual_validation_plot_2024
 ```
 
+```{r}
+## 7. Extract annual EMEP4UK concentrations at SAMHE schools
+
+# Load the school metadata only if it is not already available
+if (!exists("df_school_chars")) {
+  
+  project_dir <- dirname(dirname(analysis_dir))
+  
+  core_files <- c(
+    file.path(project_dir, "analysis_core_objects.RData"),
+    file.path(
+      project_dir,
+      "SAMHE_core_files",
+      "analysis_core_objects.RData"
+    )
+  )
+  
+  core_files <- core_files[file.exists(core_files)]
+  
+  if (length(core_files) == 0) {
+    stop("analysis_core_objects.RData could not be found.")
+  }
+  
+  core_environment <- new.env()
+  load(core_files[1], envir = core_environment)
+  df_school_chars <- core_environment$df_school_chars
+  
+  rm(core_environment)
+  gc()
+}
+
+# Create one valid coordinate pair per school
+school_locations_2024 <- df_school_chars |>
+  dplyr::transmute(
+    SchoolId_short = as.character(SchoolId_short),
+    latitude = as.numeric(SchoolLatitude),
+    longitude = as.numeric(SchoolLongitude)
+  ) |>
+  dplyr::filter(
+    !is.na(SchoolId_short),
+    !is.na(latitude),
+    !is.na(longitude)
+  ) |>
+  dplyr::distinct()
+
+# Stop if a school has conflicting coordinates
+if (anyDuplicated(school_locations_2024$SchoolId_short)) {
+  stop("Some schools have more than one coordinate pair.")
+}
+
+# Convert school locations to the EMEP4UK coordinate system
+school_points_2024 <- terra::vect(
+  school_locations_2024,
+  geom = c("longitude", "latitude"),
+  crs = "EPSG:4326"
+) |>
+  terra::project(terra::crs(pm25_2024))
+
+# Location of the EMEP4UK NetCDF file
+nc_file <- file.path(
+  analysis_dir,
+  "raw_data",
+  "EMEP4UK_met2024_emis2023.nc"
+)
+
+if (!file.exists(nc_file)) {
+  stop("EMEP4UK NetCDF file could not be found.")
+}
+# EMEP4UK variables to extract
+emep_variables <- c(
+  emep_pm25_annual = "SURF_ug_PM25_rh50",
+  emep_sia_annual  = "SURF_ug_SIA",
+  emep_nh3_annual  = "SURF_ug_NH3",
+  emep_nh4_annual  = "SURF_ug_NH4_F",
+  emep_no3_annual  = "SURF_ug_NO3_F",
+  emep_so4_annual  = "SURF_ug_SO4"
+)
+
+# Extract the 366 daily values and calculate each annual mean
+extract_annual_mean <- function(variable) {
+  
+  message("Extracting ", variable)
+  
+  raster <- terra::rast(
+    nc_file,
+    subds = variable
+  )
+  
+  daily_values <- terra::extract(
+    raster,
+    school_points_2024,
+    ID = FALSE,
+    method = "simple"
+  )
+  
+  annual_mean <- rowMeans(
+    as.matrix(daily_values),
+    na.rm = TRUE
+  )
+  
+  annual_mean[is.nan(annual_mean)] <- NA_real_
+  annual_mean
+}
+
+annual_values_2024 <- lapply(
+  emep_variables,
+  extract_annual_mean
+)
+
+# Combine school locations and annual concentrations
+school_emep_annual_2024 <- dplyr::bind_cols(
+  school_locations_2024,
+  tibble::as_tibble(annual_values_2024)
+) |>
+  dplyr::mutate(
+    sia_percent_pm25_annual = dplyr::if_else(
+      emep_pm25_annual > 0,
+      100 * emep_sia_annual / emep_pm25_annual,
+      NA_real_
+    )
+  )
+
+saveRDS(
+  school_emep_annual_2024,
+  file.path(
+    analysis_dir,
+    "processed_data",
+    "school_emep_annual_2024.rds"
+  )
+)
+
+cat(
+  "Schools extracted:", nrow(school_emep_annual_2024),
+  "\nSchools with missing EMEP values:",
+  sum(!complete.cases(school_emep_annual_2024)),
+  "\nAnnual SIA percentage range:",
+  paste(
+    round(
+      range(
+        school_emep_annual_2024$sia_percent_pm25_annual,
+        na.rm = TRUE
+      ),
+      1
+    ),
+    collapse = " to "
+  ),
+  "%\n"
+)
+```
+```{r}
+## Replace the recent SAMHE processing with the original method
+
+project_dir <- dirname(dirname(analysis_dir))
+
+core_files <- c(
+  file.path(project_dir, "analysis_core_objects.RData"),
+  file.path(
+    project_dir,
+    "SAMHE_core_files",
+    "analysis_core_objects.RData"
+  )
+)
+
+core_files <- core_files[file.exists(core_files)]
+
+core_environment <- new.env()
+load(core_files[1], envir = core_environment)
+
+datetime_tz <- attr(
+  core_environment$In_Out_24$DateTime,
+  "tzone"
+)
+
+if (is.null(datetime_tz) || datetime_tz == "") {
+  datetime_tz <- "UTC"
+}
+
+start_2024 <- as.POSIXct(
+  "2024-01-01 00:00:00",
+  tz = datetime_tz
+)
+
+end_2024 <- as.POSIXct(
+  "2025-01-01 00:00:00",
+  tz = datetime_tz
+)
+
+# Only select 2024; apply no additional exclusions
+In_Out_24_2024 <- core_environment$In_Out_24[
+  core_environment$In_Out_24$DateTime >= start_2024 &
+    core_environment$In_Out_24$DateTime < end_2024,
+  c(
+    "SchoolId_short",
+    "DateTime",
+    "pm02",
+    "pm2.5"
+  )
+]
+
+rm(core_environment)
+gc()
+
+# Original school-level summarisation method
+samhe_annual_2024 <- In_Out_24_2024 |>
+  dplyr::mutate(
+    SchoolId_short = as.character(SchoolId_short)
+  ) |>
+  dplyr::group_by(SchoolId_short) |>
+  dplyr::summarise(
+    indoor_pm25_mean = mean(pm02, na.rm = TRUE),
+    outdoor_pm25_mean = mean(`pm2.5`, na.rm = TRUE),
+    n_observations = dplyr::n(),
+    n_days = dplyr::n_distinct(as.Date(DateTime)),
+    .groups = "drop"
+  )
+
+# Left join preserves every SAMHE school
+samhe_emep_2024 <- samhe_annual_2024 |>
+  dplyr::left_join(
+    school_emep_annual_2024 |>
+      dplyr::mutate(
+        SchoolId_short = as.character(SchoolId_short)
+      ),
+    by = "SchoolId_short"
+  )
+
+saveRDS(
+  samhe_emep_2024,
+  file.path(
+    analysis_dir,
+    "processed_data",
+    "samhe_emep_2024.rds"
+  )
+)
+
+cat(
+  "SAMHE schools:", nrow(samhe_annual_2024),
+  "\nSchools matched to EMEP4UK:",
+  sum(!is.na(samhe_emep_2024$emep_sia_annual)),
+  "\nSchools without EMEP4UK:",
+  sum(is.na(samhe_emep_2024$emep_sia_annual)),
+  "\nObserved-day range:",
+  paste(range(samhe_annual_2024$n_days), collapse = " to "),
+  "\n"
+)
+```
+
+```{r}
+## 9. Initial relationship between modelled SIA and indoor PM2.5
+
+sia_analysis_2024 <- samhe_emep_2024 |>
+  dplyr::select(
+    SchoolId_short,
+    indoor_pm25_mean,
+    outdoor_pm25_mean,
+    emep_sia_annual,
+    sia_percent_pm25_annual,
+    n_days
+  ) |>
+  dplyr::filter(
+    complete.cases(
+      indoor_pm25_mean,
+      emep_sia_annual,
+      n_days
+    )
+  )
+
+pearson_sia_2024 <- cor.test(
+  sia_analysis_2024$emep_sia_annual,
+  sia_analysis_2024$indoor_pm25_mean,
+  method = "pearson"
+)
+
+spearman_sia_2024 <- cor.test(
+  sia_analysis_2024$emep_sia_annual,
+  sia_analysis_2024$indoor_pm25_mean,
+  method = "spearman",
+  exact = FALSE
+)
+
+sia_indoor_plot_2024 <- openair::scatterPlot(
+  sia_analysis_2024,
+  x = "emep_sia_annual",
+  y = "indoor_pm25_mean",
+  z = "n_days",
+  linear = TRUE,
+  ci = TRUE,
+  cols = "viridis",
+  key.title = "Observed days",
+  auto.text = FALSE,
+  xlab = "EMEP4UK modelled annual mean SIA (µg/m³)",
+  ylab = "SAMHE 2024 mean indoor PM2.5 (µg/m³)",
+  title = "Modelled SIA and indoor PM2.5 at SAMHE schools",
+  subtitle = "All available valid 2024 In_Out_24 observations"
+)
+
+cat(
+  "Schools analysed:", nrow(sia_analysis_2024),
+  "\nPearson r:", round(pearson_sia_2024$estimate, 3),
+  "\nR-squared:", round(pearson_sia_2024$estimate^2, 3),
+  "\nPearson p-value:",
+  format.pval(pearson_sia_2024$p.value, digits = 3),
+  "\nSpearman rho:", round(spearman_sia_2024$estimate, 3),
+  "\nSpearman p-value:",
+  format.pval(spearman_sia_2024$p.value, digits = 3),
+  "\n"
+)
+
+sia_indoor_plot_2024
+```
+
+```{r}
+# Coverage sensitivity analysis
+coverage_thresholds <- c(1, 30, 90)
+
+sia_coverage_results_2024 <- purrr::map_dfr(
+  coverage_thresholds,
+  function(min_days) {
+
+    data_check <- sia_analysis_2024 |>
+      dplyr::filter(n_days >= min_days)
+
+    pearson <- cor.test(
+      data_check$emep_sia_annual,
+      data_check$indoor_pm25_mean
+    )
+
+    spearman <- cor.test(
+      data_check$emep_sia_annual,
+      data_check$indoor_pm25_mean,
+      method = "spearman",
+      exact = FALSE
+    )
+
+    tibble::tibble(
+      minimum_days = min_days,
+      schools = nrow(data_check),
+      pearson_r = unname(pearson$estimate),
+      r_squared = pearson_r^2,
+      pearson_p = pearson$p.value,
+      spearman_rho = unname(spearman$estimate),
+      spearman_p = spearman$p.value
+    )
+  }
+)
+
+sia_coverage_results_2024
+```
+
+```{r}
+## Daily SIA episode data
+
+analysis_school_locations_2024 <- school_locations_2024 |>
+  dplyr::semi_join(
+    samhe_annual_2024,
+    by = "SchoolId_short"
+  )
+
+analysis_school_points_2024 <- terra::vect(
+  analysis_school_locations_2024,
+  geom = c("longitude", "latitude"),
+  crs = "EPSG:4326"
+) |>
+  terra::project(terra::crs(sia_2024))
+
+sia_values_daily_2024 <- terra::extract(
+  sia_2024,
+  analysis_school_points_2024,
+  ID = FALSE
+)
+
+school_sia_daily_2024 <- tidyr::expand_grid(
+  SchoolId_short = analysis_school_locations_2024$SchoolId_short,
+  date = as.Date(terra::time(sia_2024))
+) |>
+  dplyr::mutate(
+    emep_sia = as.vector(t(as.matrix(sia_values_daily_2024)))
+  )
+
+mean_available <- function(x) {
+  if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+}
+
+samhe_daily_2024 <- In_Out_24_2024 |>
+  dplyr::mutate(
+    SchoolId_short = as.character(SchoolId_short),
+    date = as.Date(DateTime, tz = datetime_tz)
+  ) |>
+  dplyr::group_by(SchoolId_short, date) |>
+  dplyr::summarise(
+    indoor_pm25 = mean_available(pm02),
+    aurn_pm25 = mean_available(`pm2.5`),
+    .groups = "drop"
+  )
+
+daily_sia_school_2024 <- samhe_daily_2024 |>
+  dplyr::inner_join(
+    school_sia_daily_2024,
+    by = c("SchoolId_short", "date")
+  )
+
+daily_sia_national_2024 <- school_sia_daily_2024 |>
+  dplyr::group_by(date) |>
+  dplyr::summarise(
+    emep_sia = mean(emep_sia, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::left_join(
+    samhe_daily_2024 |>
+      dplyr::group_by(date) |>
+      dplyr::summarise(
+        indoor_pm25 = mean(indoor_pm25, na.rm = TRUE),
+        aurn_pm25 = mean(aurn_pm25, na.rm = TRUE),
+        schools = sum(!is.na(indoor_pm25)),
+        .groups = "drop"
+      ),
+    by = "date"
+  )
+
+episode_threshold_2024 <- quantile(
+  daily_sia_national_2024$emep_sia,
+  0.90,
+  na.rm = TRUE
+)
+
+candidate_sia_episodes_2024 <- daily_sia_national_2024 |>
+  dplyr::filter(emep_sia >= episode_threshold_2024) |>
+  dplyr::arrange(dplyr::desc(emep_sia))
+
+cat(
+  "Matched school-days:", nrow(daily_sia_school_2024),
+  "\nSchools:", dplyr::n_distinct(daily_sia_school_2024$SchoolId_short),
+  "\nHigh-SIA threshold:", round(episode_threshold_2024, 2), "µg/m³",
+  "\nCandidate episode days:", nrow(candidate_sia_episodes_2024),
+  "\n"
+)
+
+print(candidate_sia_episodes_2024, n = 10)
+```
+
+```{r}
+## Compare each school’s highest-SIA days with its other observed days
+
+daily_sia_complete_2024 <- daily_sia_school_2024 |>
+  dplyr::filter(
+    is.finite(indoor_pm25),
+    is.finite(aurn_pm25),
+    is.finite(emep_sia)
+  ) |>
+  dplyr::group_by(SchoolId_short) |>
+  dplyr::mutate(
+    sia_threshold = quantile(emep_sia, 0.90),
+    high_sia_day = emep_sia >= sia_threshold
+  ) |>
+  dplyr::ungroup()
+
+school_sia_response_2024 <- daily_sia_complete_2024 |>
+  dplyr::group_by(SchoolId_short) |>
+  dplyr::summarise(
+    n_days = dplyr::n(),
+    high_sia_days = sum(high_sia_day),
+    indoor_high = mean(indoor_pm25[high_sia_day]),
+    indoor_other = mean(indoor_pm25[!high_sia_day]),
+    aurn_high = mean(aurn_pm25[high_sia_day]),
+    aurn_other = mean(aurn_pm25[!high_sia_day]),
+    sia_high = mean(emep_sia[high_sia_day]),
+    sia_other = mean(emep_sia[!high_sia_day]),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    indoor_change = indoor_high - indoor_other,
+    aurn_change = aurn_high - aurn_other,
+    sia_change = sia_high - sia_other
+  ) |>
+  dplyr::filter(
+    is.finite(indoor_change),
+    is.finite(aurn_change)
+  )
+
+episode_sensitivity_2024 <- purrr::map_dfr(
+  c(2, 30, 90),
+  function(min_days) {
+
+    data_check <- school_sia_response_2024 |>
+      dplyr::filter(n_days >= min_days)
+
+    test <- wilcox.test(
+      data_check$indoor_change,
+      mu = 0,
+      exact = FALSE
+    )
+
+    tibble::tibble(
+      minimum_days = min_days,
+      schools = nrow(data_check),
+      median_sia_change = median(data_check$sia_change),
+      median_aurn_change = median(data_check$aurn_change),
+      median_indoor_change = median(data_check$indoor_change),
+      schools_indoor_higher_percent =
+        100 * mean(data_check$indoor_change > 0),
+      wilcoxon_p = test$p.value
+    )
+  }
+)
+
+episode_sensitivity_2024
+```
+
+
+
