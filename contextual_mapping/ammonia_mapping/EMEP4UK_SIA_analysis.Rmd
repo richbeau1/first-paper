@@ -1536,4 +1536,166 @@ fine_sia_calendar_2024 <- openair::calendarPlot(
 
 plot(fine_sia_calendar_2024)
 ```
+```{r}
+## Compare annual modelled PM2.5 with the WHO guideline
+
+who_guideline_pm25 <- 5
+
+main_school_ids_2024 <- fine_episode_school_2024 |>
+  dplyr::filter(n_days >= 90) |>
+  dplyr::distinct(SchoolId_short)
+
+who_annual_2024 <- school_emep_components_daily_2024 |>
+  dplyr::semi_join(
+    main_school_ids_2024,
+    by = "SchoolId_short"
+  ) |>
+  dplyr::group_by(SchoolId_short) |>
+  dplyr::summarise(
+    model_days = sum(
+      is.finite(emep_pm25) & is.finite(fine_sia)
+    ),
+    annual_pm25 = mean(emep_pm25, na.rm = TRUE),
+    annual_fine_sia = mean(fine_sia, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(model_days == 366) |>
+  dplyr::mutate(
+    fine_sia_percent =
+      100 * annual_fine_sia / annual_pm25,
+    above_who = annual_pm25 > who_guideline_pm25
+  )
+
+who_summary_2024 <- who_annual_2024 |>
+  dplyr::summarise(
+    schools = dplyr::n(),
+    median_annual_pm25 = median(annual_pm25),
+    annual_pm25_range = paste(
+      round(range(annual_pm25), 2),
+      collapse = " to "
+    ),
+    schools_above_who = sum(above_who),
+    percent_above_who = 100 * mean(above_who),
+    median_fine_sia = median(annual_fine_sia),
+    median_fine_sia_percent = median(fine_sia_percent)
+  )
+
+print(who_summary_2024)
+
+who_plot_data_2024 <- who_annual_2024 |>
+  dplyr::arrange(annual_pm25) |>
+  dplyr::mutate(school_rank = dplyr::row_number())
+
+who_annual_plot_2024 <- ggplot2::ggplot(
+  who_plot_data_2024,
+  ggplot2::aes(
+    x = school_rank,
+    y = annual_pm25,
+    colour = fine_sia_percent
+  )
+) +
+  ggplot2::geom_hline(
+    yintercept = who_guideline_pm25,
+    linetype = "dashed",
+    colour = "red"
+  ) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::scale_colour_viridis_c() +
+  ggplot2::labs(
+    title = "Annual modelled PM2.5 at SAMHE school locations",
+    subtitle = "Dashed line: WHO annual PM2.5 guideline of 5 µg/m³",
+    x = "School locations ranked by annual mean PM2.5",
+    y = "EMEP4UK modelled annual mean PM2.5 (µg/m³)",
+    colour = "Fine SIA\n(% of PM2.5)",
+    caption = "262 school locations; all 366 modelled days in 2024"
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+
+who_annual_plot_2024
+```
+
+```{r}
+## Hypothetical PM2.5 after subtracting fine SIA
+
+who_subtraction_2024 <- who_annual_2024 |>
+  dplyr::mutate(
+    pm25_without_fine_sia =
+      pmax(annual_pm25 - annual_fine_sia, 0),
+    below_who_without_fine_sia =
+      pm25_without_fine_sia <= who_guideline_pm25
+  )
+
+who_subtraction_summary_2024 <- who_subtraction_2024 |>
+  dplyr::summarise(
+    schools = dplyr::n(),
+    currently_above_who = sum(above_who),
+    moved_below_who =
+      sum(above_who & below_who_without_fine_sia),
+    still_above_who =
+      sum(!below_who_without_fine_sia),
+    percent_below_without_fine_sia =
+      100 * mean(below_who_without_fine_sia)
+  )
+
+print(who_subtraction_summary_2024)
+
+who_subtraction_plot_data_2024 <- who_subtraction_2024 |>
+  dplyr::arrange(annual_pm25) |>
+  dplyr::mutate(school_rank = dplyr::row_number())
+
+who_subtraction_plot_2024 <- ggplot2::ggplot(
+  who_subtraction_plot_data_2024,
+  ggplot2::aes(x = school_rank)
+) +
+  ggplot2::geom_hline(
+    yintercept = who_guideline_pm25,
+    linetype = "dashed",
+    colour = "red"
+  ) +
+  ggplot2::geom_segment(
+    ggplot2::aes(
+      xend = school_rank,
+      y = pm25_without_fine_sia,
+      yend = annual_pm25
+    ),
+    colour = "#2A9D8F",
+    alpha = 0.45
+  ) +
+  ggplot2::geom_point(
+    ggplot2::aes(
+      y = annual_pm25,
+      colour = "Total modelled PM2.5"
+    ),
+    size = 1.8
+  ) +
+  ggplot2::geom_point(
+    ggplot2::aes(
+      y = pm25_without_fine_sia,
+      colour = "PM2.5 excluding fine SIA"
+    ),
+    size = 1.8
+  ) +
+  ggplot2::scale_colour_manual(
+    values = c(
+      "Total modelled PM2.5" = "black",
+      "PM2.5 excluding fine SIA" = "#7A1FA2"
+    )
+  ) +
+  ggplot2::labs(
+    title = "Modelled annual PM2.5 with and without fine SIA",
+    subtitle = "Hypothetical subtraction of fine nitrate, sulfate and ammonium",
+    x = "School locations ranked by annual mean PM2.5",
+    y = "Annual mean concentration (µg/m³)",
+    colour = NULL,
+    caption = paste(
+      "262 school locations; 366 modelled days.",
+      "Vertical lines represent fine SIA.",
+      "This is component subtraction, not an emissions-control prediction."
+    )
+  ) +
+  ggplot2::theme_minimal(base_size = 13) +
+  ggplot2::theme(legend.position = "bottom")
+
+who_subtraction_plot_2024
+```
 
