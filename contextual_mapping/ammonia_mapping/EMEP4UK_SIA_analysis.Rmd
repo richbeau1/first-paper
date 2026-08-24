@@ -2,11 +2,11 @@
 ## 1. Open and inspect the EMEP4UK 2024 file
 
 library(terra)
-library(ncdf4)
+library(ncdf4) 
 library(rstudioapi)
 
 # Find the folder containing this R Markdown file
-rmd_path <- getActiveDocumentContext()$path
+rmd_path <- getActiveDocumentContext()$path 
 
 if (!nzchar(rmd_path)) {
   stop(
@@ -14,7 +14,7 @@ if (!nzchar(rmd_path)) {
   )
 }
 
-analysis_dir <- dirname(rmd_path)
+analysis_dir <- dirname(rmd_path) # Get the directory of the R Markdown file
 
 # Location of the downloaded NetCDF file
 emep_file <- file.path(
@@ -834,133 +834,153 @@ cat(
 ```
 
 ```{r}
-## 10. Calculate annual fine-SIA composition and relationships
+## Definitive annual analysis dataset
 
-# Calculate EMEP4UK means using all 366 model days
-model_annual_fine_sia_2024 <- school_emep_daily_2024 |>
+# Preserve the established ≥90 complete-day SAMHE cohort
+schools_90_days_2024 <- daily_fine_sia_2024 |>
+  dplyr::count(SchoolId_short, name = "complete_days") |>
+  dplyr::filter(complete_days >= 90)
+
+# Calculate annual EMEP4UK values from all 366 modelled days
+emep_annual_fine_2024 <- school_emep_components_daily_2024 |>
   dplyr::group_by(SchoolId_short) |>
   dplyr::summarise(
-    emep_pm25_annual =
-      mean(emep_pm25, na.rm = TRUE),
-
-    fine_sia_annual =
-      mean(fine_sia, na.rm = TRUE),
-
-    nitrate_annual =
-      mean(emep_no3_f, na.rm = TRUE),
-
-    sulfate_annual =
-      mean(emep_so4, na.rm = TRUE),
-
-    ammonium_annual =
-      mean(emep_nh4, na.rm = TRUE),
-
-    nitrate_dominant_days =
-      100 * mean(
-        emep_no3_f > emep_so4,
-        na.rm = TRUE
-      ),
-
-    total_sia_closure =
-      100 *
-      mean(
-        reconstructed_total_sia,
-        na.rm = TRUE
-      ) /
-      mean(
-        emep_sia_total,
-        na.rm = TRUE
-      ),
-
+    model_days = sum(
+      complete.cases(
+        emep_pm25,
+        emep_sia,
+        emep_nh4,
+        emep_no3_f,
+        emep_no3_c,
+        emep_so4
+      )
+    ),
+    emep_pm25_annual = mean(emep_pm25, na.rm = TRUE),
+    fine_sia_annual = mean(fine_sia, na.rm = TRUE),
+    nitrate_annual = mean(emep_no3_f, na.rm = TRUE),
+    sulfate_annual = mean(emep_so4, na.rm = TRUE),
+    ammonium_annual = mean(emep_nh4, na.rm = TRUE),
+    total_sia_annual = mean(emep_sia, na.rm = TRUE),
+    reconstructed_sia_annual =
+      mean(reconstructed_total_sia, na.rm = TRUE),
     .groups = "drop"
   ) |>
   dplyr::mutate(
-    fine_sia_percent_pm25 =
-      100 *
-      fine_sia_annual /
-      emep_pm25_annual,
+    # Ratio of annual means—not the mean of daily percentages
+    fine_sia_percent_annual =
+      100 * fine_sia_annual / emep_pm25_annual,
 
-    nitrate_share =
-      100 *
-      nitrate_annual /
-      fine_sia_annual,
+    nitrate_share_annual =
+      100 * nitrate_annual / fine_sia_annual,
 
-    sulfate_share =
-      100 *
-      sulfate_annual /
-      fine_sia_annual,
+    sulfate_share_annual =
+      100 * sulfate_annual / fine_sia_annual,
 
-    ammonium_share =
-      100 *
-      ammonium_annual /
-      fine_sia_annual
+    ammonium_share_annual =
+      100 * ammonium_annual / fine_sia_annual,
+
+    pm25_without_fine_sia =
+      emep_pm25_annual - fine_sia_annual,
+
+    total_sia_closure =
+      100 * reconstructed_sia_annual / total_sia_annual
   )
 
-annual_fine_sia_school_2024 <- samhe_annual_2024 |>
-  dplyr::transmute(
-    SchoolId_short =
-      as.character(SchoolId_short),
-
-    indoor_pm25_mean,
-    outdoor_pm25_mean,
-
-    observed_days = n_days
-  ) |>
-  dplyr::inner_join(
-    model_annual_fine_sia_2024,
-    by = "SchoolId_short"
-  ) |>
-  dplyr::inner_join(
-    school_coverage_2024,
+# Join the annual model results to the established SAMHE summaries
+annual_primary_2024 <- schools_90_days_2024 |>
+  dplyr::left_join(
+    samhe_annual_2024,
     by = "SchoolId_short"
   ) |>
   dplyr::left_join(
-    school_locations_2024,
+    emep_annual_fine_2024,
+    by = "SchoolId_short"
+  ) |>
+  dplyr::filter(
+    complete.cases(
+      indoor_pm25_mean,
+      emep_pm25_annual,
+      fine_sia_annual
+    )
+  )
+
+# Concise validation summary
+annual_primary_summary_2024 <- annual_primary_2024 |>
+  dplyr::summarise(
+    schools = dplyr::n(),
+    model_days_min = min(model_days),
+    model_days_max = max(model_days),
+    samhe_days_min = min(complete_days),
+    samhe_days_max = max(complete_days),
+    median_modelled_pm25 = median(emep_pm25_annual),
+    median_fine_sia = median(fine_sia_annual),
+    median_fine_sia_percent =
+      median(fine_sia_percent_annual),
+    schools_above_who_5 =
+      sum(emep_pm25_annual > 5),
+    percent_above_who_5 =
+      100 * mean(emep_pm25_annual > 5),
+    median_component_closure =
+      median(total_sia_closure)
+  )
+
+annual_primary_summary_2024
+saveRDS(
+  annual_primary_2024,
+  file.path(analysis_dir, "processed_data", "annual_primary_2024.rds")
+)
+```
+
+```{r}
+## Annual fine-SIA composition and indoor relationship
+
+# Add complete-day coverage to the validated annual EMEP4UK values
+annual_fine_sia_all_2024 <- daily_fine_sia_2024 |>
+  dplyr::count(
+    SchoolId_short,
+    name = "complete_days"
+  ) |>
+  dplyr::left_join(
+    samhe_annual_2024 |>
+      dplyr::select(
+        SchoolId_short,
+        indoor_pm25_mean,
+        outdoor_pm25_mean
+      ),
+    by = "SchoolId_short"
+  ) |>
+  dplyr::left_join(
+    emep_annual_fine_2024,
     by = "SchoolId_short"
   )
 
-# Primary analysis using at least 90 complete days
-annual_fine_sia_analysis_2024 <-
-  annual_fine_sia_school_2024 |>
-  dplyr::filter(
-    complete_days >= 90,
-    is.finite(indoor_pm25_mean),
-    is.finite(fine_sia_annual)
-  )
+# Primary ≥90-day cohort
+annual_fine_sia_analysis_2024 <- annual_primary_2024
 
 fine_sia_annual_summary_2024 <-
   annual_fine_sia_analysis_2024 |>
   dplyr::summarise(
     schools = dplyr::n(),
-
-    median_fine_sia_percent_pm25 =
-      median(fine_sia_percent_pm25),
-
+    median_fine_sia = median(fine_sia_annual),
+    median_fine_sia_percent =
+      median(fine_sia_percent_annual),
     median_nitrate_share =
-      median(nitrate_share),
-
+      median(nitrate_share_annual),
     median_sulfate_share =
-      median(sulfate_share),
-
+      median(sulfate_share_annual),
     median_ammonium_share =
-      median(ammonium_share),
-
-    median_nitrate_dominant_days =
-      median(nitrate_dominant_days),
-
+      median(ammonium_share_annual),
     median_total_sia_closure =
       median(total_sia_closure)
   )
 
-print(fine_sia_annual_summary_2024)
-
-# Coverage sensitivity analysis
+# Check whether the annual relationship changes with coverage
 annual_fine_sia_sensitivity_2024 <-
   purrr::map_dfr(
     c(1, 30, 90),
     function(minimum_days) {
 
-      results <- annual_fine_sia_school_2024 |>
+      results <- annual_fine_sia_all_2024 |>
         dplyr::filter(
           complete_days >= minimum_days,
           is.finite(indoor_pm25_mean),
@@ -983,53 +1003,124 @@ annual_fine_sia_sensitivity_2024 <-
       tibble::tibble(
         minimum_days = minimum_days,
         schools = nrow(results),
-
-        pearson_r =
-          unname(pearson$estimate),
-
-        r_squared =
-          unname(pearson$estimate)^2,
-
-        pearson_p =
-          pearson$p.value,
-
-        spearman_rho =
-          unname(spearman$estimate),
-
-        spearman_p =
-          spearman$p.value
+        pearson_r = unname(pearson$estimate),
+        r_squared = unname(pearson$estimate)^2,
+        pearson_p = pearson$p.value,
+        spearman_rho = unname(spearman$estimate),
+        spearman_p = spearman$p.value
       )
     }
   )
 
-print(annual_fine_sia_sensitivity_2024)
-
-fine_sia_annual_plot_2024 <-
-  openair::scatterPlot(
-    annual_fine_sia_analysis_2024,
-    x = "fine_sia_annual",
-    y = "indoor_pm25_mean",
-    z = "complete_days",
-    linear = TRUE,
-    ci = TRUE,
-    cols = "viridis",
-    key.title = "Complete days",
-    auto.text = FALSE,
-
-    xlab =
-      "EMEP4UK annual mean fine SIA (µg/m³)",
-
-    ylab =
-      "SAMHE 2024 mean indoor PM2.5 (µg/m³)",
-
-    title =
-      "Annual fine SIA and indoor PM2.5 at SAMHE schools",
-
-    subtitle =
-      "Schools with at least 90 complete matched days in 2024"
+fine_sia_annual_plot_2024 <- openair::scatterPlot(
+  annual_fine_sia_analysis_2024,
+  x = "fine_sia_annual",
+  y = "indoor_pm25_mean",
+  z = "complete_days",
+  linear = TRUE,
+  ci = TRUE,
+  cols = "viridis",
+  key.title = "Complete days",
+  auto.text = FALSE,
+  xlab = "EMEP4UK annual mean fine SIA (µg/m³)",
+  ylab = paste(
+    "SAMHE 2024 mean indoor PM2.5",
+    "from available valid observations (µg/m³)"
+  ),
+  title = "Annual fine SIA and indoor PM2.5 at SAMHE schools",
+  subtitle = paste(
+    "262 schools with at least 90 complete matched days;",
+    "EMEP4UK means use all 366 modelled days"
   )
+)
+
+fine_sia_annual_summary_2024
+annual_fine_sia_sensitivity_2024
+print(fine_sia_annual_plot_2024$plot)
 
 ```
+```{r}
+## Sensitivity analysis using school-observed days
+
+observed_day_emep_2024 <- daily_fine_sia_2024 |>
+  dplyr::group_by(SchoolId_short) |>
+  dplyr::summarise(
+    observed_days = dplyr::n(),
+    observed_pm25 = mean(emep_pm25, na.rm = TRUE),
+    observed_fine_sia = mean(fine_sia, na.rm = TRUE),
+    observed_fine_sia_percent =
+      100 * observed_fine_sia / observed_pm25,
+    .groups = "drop"
+  )
+
+observed_day_sensitivity_2024 <- annual_primary_2024 |>
+  dplyr::select(
+    SchoolId_short,
+    indoor_pm25_mean,
+    complete_days,
+    emep_pm25_annual,
+    fine_sia_annual,
+    fine_sia_percent_annual
+  ) |>
+  dplyr::left_join(
+    observed_day_emep_2024,
+    by = "SchoolId_short"
+  )
+
+summarise_sia_relationship <- function(
+    data,
+    period_name,
+    sia_column,
+    percentage_column
+) {
+
+  pearson <- stats::cor.test(
+    data[[sia_column]],
+    data$indoor_pm25_mean,
+    method = "pearson"
+  )
+
+  spearman <- stats::cor.test(
+    data[[sia_column]],
+    data$indoor_pm25_mean,
+    method = "spearman",
+    exact = FALSE
+  )
+
+  tibble::tibble(
+    model_period = period_name,
+    schools = nrow(data),
+    median_fine_sia =
+      median(data[[sia_column]], na.rm = TRUE),
+    median_fine_sia_percent =
+      median(data[[percentage_column]], na.rm = TRUE),
+    pearson_r = unname(pearson$estimate),
+    r_squared = unname(pearson$estimate)^2,
+    pearson_p = pearson$p.value,
+    spearman_rho = unname(spearman$estimate),
+    spearman_p = spearman$p.value
+  )
+}
+
+observed_day_sensitivity_summary_2024 <- dplyr::bind_rows(
+  summarise_sia_relationship(
+    observed_day_sensitivity_2024,
+    "All 366 modelled days",
+    "fine_sia_annual",
+    "fine_sia_percent_annual"
+  ),
+  summarise_sia_relationship(
+    observed_day_sensitivity_2024,
+    "School-observed days",
+    "observed_fine_sia",
+    "observed_fine_sia_percent"
+  )
+)
+
+observed_day_sensitivity_summary_2024
+```
+
+
 
 ```{r}
 ## 11. Compare high fine-SIA days with other observed days
@@ -1252,16 +1343,24 @@ fine_sia_episode_plot_2024
 
 ```{r}
 ## 13. Map annual fine-SIA contribution at SAMHE schools
+## Map annual fine-SIA percentage at SAMHE schools
 
-fine_sia_map_data_2024 <-
-  annual_fine_sia_analysis_2024 |>
+fine_sia_map_data_2024 <- annual_primary_2024 |>
+  dplyr::left_join(
+    school_locations_2024 |>
+      dplyr::select(
+        SchoolId_short,
+        longitude,
+        latitude
+      ),
+    by = "SchoolId_short"
+  ) |>
   dplyr::filter(
     is.finite(longitude),
     is.finite(latitude),
-    is.finite(fine_sia_percent_pm25)
+    is.finite(fine_sia_percent_annual)
   )
 
-# UK and Ireland coastline
 uk_boundary <- sf::st_as_sf(
   maps::map(
     "world",
@@ -1273,7 +1372,6 @@ uk_boundary <- sf::st_as_sf(
 
 sf::st_crs(uk_boundary) <- 4326
 
-# Convert school locations to spatial points
 fine_sia_school_points_2024 <- sf::st_as_sf(
   fine_sia_map_data_2024,
   coords = c("longitude", "latitude"),
@@ -1291,7 +1389,7 @@ fine_sia_school_map_2024 <- ggplot2::ggplot() +
   ggplot2::geom_sf(
     data = fine_sia_school_points_2024,
     ggplot2::aes(
-      fill = fine_sia_percent_pm25
+      fill = fine_sia_percent_annual
     ),
     shape = 21,
     colour = "white",
@@ -1311,15 +1409,14 @@ fine_sia_school_map_2024 <- ggplot2::ggplot() +
   ggplot2::labs(
     title =
       "Annual modelled fine-SIA contribution at SAMHE schools",
-
     subtitle = paste(
       "Fine nitrate, sulfate and ammonium as a percentage",
       "of annual mean modelled PM2.5, 2024"
     ),
-
     caption = paste(
       nrow(fine_sia_map_data_2024),
-      "schools with at least 90 complete matched days"
+      "schools with at least 90 complete matched days;",
+      "EMEP4UK means use all 366 modelled days"
     )
   ) +
   ggplot2::theme_void(base_size = 13) +
@@ -1347,6 +1444,7 @@ ggplot2::ggsave(
   dpi = 400,
   bg = "white"
 )
+
 ```
 ```{r}
 ## 14. Map annual fine-SIA concentration at SAMHE schools
@@ -1384,9 +1482,10 @@ fine_sia_concentration_map_2024 <- ggplot2::ggplot() +
       "Annual mean EMEP4UK fine nitrate, sulfate and ammonium, 2024",
 
     caption = paste(
-      nrow(fine_sia_map_data_2024),
-      "schools with at least 90 complete matched days"
-    )
+  nrow(fine_sia_map_data_2024),
+  "schools with at least 90 complete matched days;",
+  "EMEP4UK means use all 366 modelled days"
+)
   ) +
   ggplot2::theme_void(base_size = 13) +
   ggplot2::theme(
@@ -1536,119 +1635,311 @@ fine_sia_calendar_2024 <- openair::calendarPlot(
 
 plot(fine_sia_calendar_2024)
 ```
+
 ```{r}
-## Compare annual modelled PM2.5 with the WHO guideline
+## Map the 4–8 November fine-SIA episode and indoor response
 
-who_guideline_pm25 <- 5
+november_episode_dates <- seq(
+  as.Date("2024-11-04"),
+  as.Date("2024-11-08"),
+  by = "day"
+)
 
-main_school_ids_2024 <- fine_episode_school_2024 |>
+# Read only the required dates from each fine-SIA component
+read_episode_component <- function(variable) {
+
+  raster <- terra::rast(
+    nc_file,
+    subds = variable
+  )
+
+  episode_layers <- which(
+    as.Date(terra::time(raster)) %in%
+      november_episode_dates
+  )
+
+  if (length(episode_layers) != length(november_episode_dates)) {
+    stop("Not all November episode dates were found.")
+  }
+
+  raster[[episode_layers]]
+}
+
+episode_nh4_2024 <- read_episode_component("SURF_ug_NH4_F")
+episode_no3_2024 <- read_episode_component("SURF_ug_NO3_F")
+episode_so4_2024 <- read_episode_component("SURF_ug_SO4")
+
+# Mean fine SIA across 4–8 November
+november_fine_sia_raster_2024 <- terra::app(
+  episode_nh4_2024 +
+    episode_no3_2024 +
+    episode_so4_2024,
+  fun = mean,
+  na.rm = TRUE
+)
+
+names(november_fine_sia_raster_2024) <- "fine_sia"
+
+# Main cohort: schools with at least 90 complete matched days
+episode_school_ids_2024 <- fine_episode_school_2024 |>
   dplyr::filter(n_days >= 90) |>
   dplyr::distinct(SchoolId_short)
 
-who_annual_2024 <- school_emep_components_daily_2024 |>
+# Indoor response: episode mean minus all other observed days
+november_school_response_2024 <- fine_episode_daily_2024 |>
   dplyr::semi_join(
-    main_school_ids_2024,
+    episode_school_ids_2024,
     by = "SchoolId_short"
   ) |>
   dplyr::group_by(SchoolId_short) |>
   dplyr::summarise(
-    model_days = sum(
-      is.finite(emep_pm25) & is.finite(fine_sia)
+    episode_days = sum(date %in% november_episode_dates),
+    episode_indoor_pm25 = mean(
+      indoor_pm25[date %in% november_episode_dates],
+      na.rm = TRUE
     ),
-    annual_pm25 = mean(emep_pm25, na.rm = TRUE),
-    annual_fine_sia = mean(fine_sia, na.rm = TRUE),
+    other_indoor_pm25 = mean(
+      indoor_pm25[!date %in% november_episode_dates],
+      na.rm = TRUE
+    ),
+    indoor_change =
+      episode_indoor_pm25 - other_indoor_pm25,
     .groups = "drop"
   ) |>
-  dplyr::filter(model_days == 366) |>
-  dplyr::mutate(
-    fine_sia_percent =
-      100 * annual_fine_sia / annual_pm25,
-    above_who = annual_pm25 > who_guideline_pm25
+  dplyr::filter(
+    episode_days >= 3,
+    is.finite(indoor_change)
   )
 
-who_summary_2024 <- who_annual_2024 |>
-  dplyr::summarise(
-    schools = dplyr::n(),
-    median_annual_pm25 = median(annual_pm25),
-    annual_pm25_range = paste(
-      round(range(annual_pm25), 2),
-      collapse = " to "
+# UK boundary in the EMEP4UK coordinate system
+uk_episode_sf_2024 <- rnaturalearth::ne_countries(
+  country = "United Kingdom",
+  scale = "medium",
+  returnclass = "sf"
+) |>
+  sf::st_transform(
+    crs = terra::crs(november_fine_sia_raster_2024)
+  )
+
+uk_bbox <- sf::st_bbox(uk_episode_sf_2024)
+
+episode_map_extent <- terra::ext(
+  uk_bbox["xmin"] - 50000,
+  uk_bbox["xmax"] + 50000,
+  uk_bbox["ymin"] - 50000,
+  uk_bbox["ymax"] + 50000
+)
+
+november_fine_sia_map_raster_2024 <- terra::crop(
+  november_fine_sia_raster_2024,
+  episode_map_extent
+)
+
+november_fine_sia_map_df_2024 <- terra::as.data.frame(
+  november_fine_sia_map_raster_2024,
+  xy = TRUE,
+  na.rm = TRUE
+)
+
+# School coordinates
+episode_all_schools_sf_2024 <- analysis_school_locations_2024 |>
+  dplyr::semi_join(
+    episode_school_ids_2024,
+    by = "SchoolId_short"
+  ) |>
+  sf::st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs = 4326
+  ) |>
+  sf::st_transform(
+    crs = terra::crs(november_fine_sia_raster_2024)
+  )
+
+episode_reporting_schools_sf_2024 <-
+  episode_all_schools_sf_2024 |>
+  dplyr::inner_join(
+    november_school_response_2024,
+    by = "SchoolId_short"
+  )
+
+november_episode_map_2024 <- ggplot2::ggplot() +
+  ggplot2::geom_raster(
+    data = november_fine_sia_map_df_2024,
+    ggplot2::aes(
+      x = x,
+      y = y,
+      fill = fine_sia
+    )
+  ) +
+  ggplot2::geom_sf(
+    data = uk_episode_sf_2024,
+    fill = NA,
+    colour = "grey35",
+    linewidth = 0.4
+  ) +
+  ggplot2::geom_sf(
+    data = episode_all_schools_sf_2024,
+    shape = 21,
+    fill = "grey70",
+    colour = "white",
+    size = 1.3,
+    stroke = 0.2
+  ) +
+  ggplot2::geom_sf(
+    data = episode_reporting_schools_sf_2024,
+    ggplot2::aes(colour = indoor_change),
+    size = 2.2
+  ) +
+  ggplot2::scale_fill_viridis_c(
+    name = "Modelled fine SIA\n(µg/m³)"
+  ) +
+  ggplot2::scale_colour_gradient2(
+    low = "#2166AC",
+    midpoint = 0,
+    mid = "white",
+    high = "#7A1FA2",
+    name = "Indoor PM2.5\nchange (µg/m³)"
+  ) +
+  ggplot2::coord_sf(
+    crs = sf::st_crs(uk_episode_sf_2024),
+    expand = FALSE,
+    datum = NA
+  ) +
+  ggplot2::labs(
+    title = "Fine-SIA episode and indoor PM2.5 response",
+    subtitle = paste(
+      "Mean modelled fine SIA, 4–8 November 2024;",
+      "school colour shows episode mean minus other observed days"
     ),
-    schools_above_who = sum(above_who),
-    percent_above_who = 100 * mean(above_who),
-    median_fine_sia = median(annual_fine_sia),
-    median_fine_sia_percent = median(fine_sia_percent)
+    caption = paste(
+      nrow(episode_reporting_schools_sf_2024),
+      "schools with at least 3 episode days;",
+      "grey points had insufficient episode data.",
+      "Fine SIA = ammonium + fine nitrate + sulfate."
+    )
+  ) +
+  ggplot2::theme_void(base_size = 13) +
+  ggplot2::theme(
+    legend.position = "right",
+    plot.title = ggplot2::element_text(face = "bold")
   )
 
-print(who_summary_2024)
+cat(
+  "Main school cohort:", nrow(episode_all_schools_sf_2024),
+  "\nSchools coloured:", nrow(episode_reporting_schools_sf_2024),
+  "\nMedian indoor PM2.5 change:",
+  round(
+    median(
+      november_school_response_2024$indoor_change,
+      na.rm = TRUE
+    ),
+    2
+  ),
+  "µg/m³\n"
+)
 
-who_plot_data_2024 <- who_annual_2024 |>
-  dplyr::arrange(annual_pm25) |>
+november_episode_map_2024
+
+rm(
+  episode_nh4_2024,
+  episode_no3_2024,
+  episode_so4_2024
+)
+
+invisible(gc())
+```
+
+
+```{r}
+## Annual modelled PM2.5 and fine-SIA contribution
+
+annual_ranked_2024 <- annual_primary_2024 |>
+  dplyr::arrange(emep_pm25_annual) |>
   dplyr::mutate(school_rank = dplyr::row_number())
 
-who_annual_plot_2024 <- ggplot2::ggplot(
-  who_plot_data_2024,
+annual_who_summary_2024 <- annual_ranked_2024 |>
+  dplyr::summarise(
+    schools = dplyr::n(),
+    median_annual_pm25 = median(emep_pm25_annual),
+    annual_pm25_range = paste(
+      round(range(emep_pm25_annual), 2),
+      collapse = " to "
+    ),
+    schools_above_who_5 = sum(emep_pm25_annual > 5),
+    percent_above_who_5 =
+      100 * mean(emep_pm25_annual > 5),
+    median_fine_sia = median(fine_sia_annual),
+    median_fine_sia_percent =
+      median(fine_sia_percent_annual)
+  )
+
+annual_pm25_who_plot_2024 <- ggplot2::ggplot(
+  annual_ranked_2024,
   ggplot2::aes(
     x = school_rank,
-    y = annual_pm25,
-    colour = fine_sia_percent
+    y = emep_pm25_annual,
+    colour = fine_sia_percent_annual
   )
 ) +
+  ggplot2::geom_point(size = 2.5) +
   ggplot2::geom_hline(
-    yintercept = who_guideline_pm25,
-    linetype = "dashed",
-    colour = "red"
+    yintercept = 5,
+    colour = "red",
+    linetype = "dashed"
   ) +
-  ggplot2::geom_point(size = 2) +
-  ggplot2::scale_colour_viridis_c() +
+  ggplot2::scale_colour_viridis_c(
+    name = "Fine SIA\n(% of PM2.5)"
+  ) +
   ggplot2::labs(
     title = "Annual modelled PM2.5 at SAMHE school locations",
     subtitle = "Dashed line: WHO annual PM2.5 guideline of 5 µg/m³",
     x = "School locations ranked by annual mean PM2.5",
     y = "EMEP4UK modelled annual mean PM2.5 (µg/m³)",
-    colour = "Fine SIA\n(% of PM2.5)",
-    caption = "262 school locations; all 366 modelled days in 2024"
+    caption = paste(
+      nrow(annual_ranked_2024),
+      "schools with at least 90 complete matched days;",
+      "EMEP4UK means use all 366 modelled days in 2024"
+    )
   ) +
   ggplot2::theme_minimal(base_size = 13)
 
-who_annual_plot_2024
+annual_who_summary_2024
+annual_pm25_who_plot_2024
 ```
 
 ```{r}
-## Hypothetical PM2.5 after subtracting fine SIA
+## Hypothetical subtraction of annual fine SIA
 
-who_subtraction_2024 <- who_annual_2024 |>
+annual_sia_subtraction_2024 <- annual_primary_2024 |>
+  dplyr::arrange(emep_pm25_annual) |>
   dplyr::mutate(
-    pm25_without_fine_sia =
-      pmax(annual_pm25 - annual_fine_sia, 0),
-    below_who_without_fine_sia =
-      pm25_without_fine_sia <= who_guideline_pm25
+    school_rank = dplyr::row_number(),
+    above_who_total = emep_pm25_annual > 5,
+    above_who_without_sia = pm25_without_fine_sia > 5
   )
 
-who_subtraction_summary_2024 <- who_subtraction_2024 |>
+annual_sia_subtraction_summary_2024 <-
+  annual_sia_subtraction_2024 |>
   dplyr::summarise(
     schools = dplyr::n(),
-    currently_above_who = sum(above_who),
-    moved_below_who =
-      sum(above_who & below_who_without_fine_sia),
-    still_above_who =
-      sum(!below_who_without_fine_sia),
-    percent_below_without_fine_sia =
-      100 * mean(below_who_without_fine_sia)
+    median_total_pm25 = median(emep_pm25_annual),
+    median_fine_sia = median(fine_sia_annual),
+    median_pm25_without_fine_sia =
+      median(pm25_without_fine_sia),
+    schools_above_who_total =
+      sum(above_who_total),
+    schools_above_who_without_sia =
+      sum(above_who_without_sia),
+    median_fine_sia_percent =
+      median(fine_sia_percent_annual)
   )
 
-print(who_subtraction_summary_2024)
-
-who_subtraction_plot_data_2024 <- who_subtraction_2024 |>
-  dplyr::arrange(annual_pm25) |>
-  dplyr::mutate(school_rank = dplyr::row_number())
-
-who_subtraction_plot_2024 <- ggplot2::ggplot(
-  who_subtraction_plot_data_2024,
+annual_sia_subtraction_plot_2024 <- ggplot2::ggplot(
+  annual_sia_subtraction_2024,
   ggplot2::aes(x = school_rank)
 ) +
   ggplot2::geom_hline(
-    yintercept = who_guideline_pm25,
+    yintercept = 5,
     linetype = "dashed",
     colour = "red"
   ) +
@@ -1656,46 +1947,290 @@ who_subtraction_plot_2024 <- ggplot2::ggplot(
     ggplot2::aes(
       xend = school_rank,
       y = pm25_without_fine_sia,
-      yend = annual_pm25
+      yend = emep_pm25_annual
     ),
-    colour = "#2A9D8F",
-    alpha = 0.45
-  ) +
-  ggplot2::geom_point(
-    ggplot2::aes(
-      y = annual_pm25,
-      colour = "Total modelled PM2.5"
-    ),
-    size = 1.8
+    colour = "#9BD8D3",
+    alpha = 0.7
   ) +
   ggplot2::geom_point(
     ggplot2::aes(
       y = pm25_without_fine_sia,
       colour = "PM2.5 excluding fine SIA"
     ),
-    size = 1.8
+    size = 2
+  ) +
+  ggplot2::geom_point(
+    ggplot2::aes(
+      y = emep_pm25_annual,
+      colour = "Total modelled PM2.5"
+    ),
+    size = 2
   ) +
   ggplot2::scale_colour_manual(
+    name = NULL,
     values = c(
-      "Total modelled PM2.5" = "black",
-      "PM2.5 excluding fine SIA" = "#7A1FA2"
+      "PM2.5 excluding fine SIA" = "#7A1FA2",
+      "Total modelled PM2.5" = "black"
     )
   ) +
   ggplot2::labs(
     title = "Modelled annual PM2.5 with and without fine SIA",
-    subtitle = "Hypothetical subtraction of fine nitrate, sulfate and ammonium",
+    subtitle = paste(
+      "Hypothetical subtraction of fine nitrate,",
+      "sulfate and ammonium"
+    ),
     x = "School locations ranked by annual mean PM2.5",
     y = "Annual mean concentration (µg/m³)",
-    colour = NULL,
     caption = paste(
-      "262 school locations; 366 modelled days.",
+      "262 schools; all 366 modelled days.",
       "Vertical lines represent fine SIA.",
-      "This is component subtraction, not an emissions-control prediction."
+      "Component subtraction—not an emissions-control prediction."
     )
   ) +
   ggplot2::theme_minimal(base_size = 13) +
-  ggplot2::theme(legend.position = "bottom")
+  ggplot2::theme(
+    legend.position = "bottom"
+  )
 
-who_subtraction_plot_2024
+annual_sia_subtraction_summary_2024
+annual_sia_subtraction_plot_2024
+```
+```{r}
+## Join contextual school variables
+
+school_context_2024 <- df_school_chars |>
+  dplyr::mutate(
+    SchoolId_short = as.character(SchoolId_short)
+  ) |>
+  dplyr::select(
+    SchoolId_short,
+    SchoolFundingType,
+    SchoolType,
+    SchoolSize,
+    SchoolBuildingAge,
+    pcode_region,
+    Country,
+    LocalAuthority,
+    IMD_decile,
+    RUC,
+    EducationPhase,
+    PercentageFSM,
+    SchoolCapacity,
+    NumberOfPupils,
+    EPCBand,
+    MainHeatingFuel,
+    FloorArea,
+    BuildingEnvironment,
+    FractionalOccupancy
+  ) |>
+  dplyr::group_by(SchoolId_short) |>
+  dplyr::summarise(
+    dplyr::across(
+      everything(),
+      ~ dplyr::first(
+        .x[!is.na(.x)],
+        default = .x[NA_integer_][1]
+      )
+    ),
+    .groups = "drop"
+  )
+
+annual_context_2024 <- annual_primary_2024 |>
+  dplyr::left_join(
+    school_context_2024,
+    by = "SchoolId_short"
+  )
+
+stopifnot(
+  nrow(annual_context_2024) ==
+    nrow(annual_primary_2024)
+)
+
+annual_context_2024
+
+
+```
+
+
+```{r}
+## Prepare annual contextual infiltration analysis
+
+annual_context_analysis_2024 <- annual_context_2024 |>
+  dplyr::mutate(
+    annual_io_ratio = dplyr::if_else(
+      outdoor_pm25_mean > 0,
+      indoor_pm25_mean / outdoor_pm25_mean,
+      NA_real_
+    )
+  ) |>
+  dplyr::filter(
+    is.finite(annual_io_ratio)
+  )
+
+contextual_coverage_2024 <- annual_context_analysis_2024 |>
+  dplyr::summarise(
+    schools = dplyr::n(),
+    BuildingEnvironment =
+      sum(!is.na(BuildingEnvironment)),
+    SchoolBuildingAge =
+      sum(!is.na(SchoolBuildingAge)),
+    EPCBand =
+      sum(!is.na(EPCBand)),
+    FloorArea =
+      sum(!is.na(FloorArea)),
+    RUC =
+      sum(!is.na(RUC)),
+    IMD_decile =
+      sum(!is.na(IMD_decile)),
+    PercentageFSM =
+      sum(!is.na(PercentageFSM)),
+    FractionalOccupancy =
+      sum(!is.na(FractionalOccupancy))
+  ) |>
+  tidyr::pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "schools_with_data"
+  )
+
+annual_io_summary_2024 <- annual_context_analysis_2024 |>
+  dplyr::summarise(
+    schools = dplyr::n(),
+    median_io_ratio = median(annual_io_ratio),
+    io_ratio_range = paste(
+      round(range(annual_io_ratio), 2),
+      collapse = " to "
+    )
+  )
+
+annual_io_summary_2024
+contextual_coverage_2024
+```
+
+```{r contextual-association-tests}
+
+## Test associations with the annual indoor/outdoor PM2.5 ratio
+
+context_test_data_2024 <- annual_context_analysis_2024 |>
+  dplyr::mutate(
+    PercentageFSM_numeric = readr::parse_number(
+      as.character(PercentageFSM),
+      na = c("", "NA", "c")
+    ),
+
+    FloorArea_numeric = readr::parse_number(
+      as.character(FloorArea),
+      na = c("", "NA")
+    ),
+
+    RUC_group = dplyr::case_when(
+      grepl("^\\s*urban", RUC, ignore.case = TRUE) ~ "Urban",
+      grepl("^\\s*rural", RUC, ignore.case = TRUE) ~ "Rural",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  dplyr::add_count(
+    BuildingEnvironment,
+    name = "building_environment_n"
+  ) |>
+  dplyr::mutate(
+    BuildingEnvironment_group = dplyr::if_else(
+      !is.na(BuildingEnvironment) &
+        building_environment_n >= 5,
+      as.character(BuildingEnvironment),
+      NA_character_
+    )
+  )
+
+numeric_context_variables_2024 <- c(
+  "SchoolBuildingAge",
+  "IMD_decile",
+  "PercentageFSM_numeric",
+  "FractionalOccupancy",
+  "FloorArea_numeric"
+)
+
+context_numeric_results_2024 <- purrr::map_dfr(
+  numeric_context_variables_2024,
+  function(variable_name) {
+
+    test_data <- context_test_data_2024 |>
+      dplyr::transmute(
+        contextual_value = suppressWarnings(
+          as.numeric(as.character(.data[[variable_name]]))
+        ),
+        annual_io_ratio
+      ) |>
+      dplyr::filter(
+        is.finite(contextual_value),
+        is.finite(annual_io_ratio)
+      )
+
+    test_result <- stats::cor.test(
+      test_data$contextual_value,
+      test_data$annual_io_ratio,
+      method = "spearman",
+      exact = FALSE
+    )
+
+    tibble::tibble(
+      variable = sub("_numeric$", "", variable_name),
+      method = "Spearman correlation",
+      schools = nrow(test_data),
+      groups = NA_integer_,
+      statistic = unname(test_result$estimate),
+      p_value = test_result$p.value
+    )
+  }
+)
+
+categorical_context_variables_2024 <- c(
+  "RUC_group",
+  "BuildingEnvironment_group"
+)
+
+context_categorical_results_2024 <- purrr::map_dfr(
+  categorical_context_variables_2024,
+  function(variable_name) {
+
+    test_data <- context_test_data_2024 |>
+      dplyr::transmute(
+        contextual_group = .data[[variable_name]],
+        annual_io_ratio
+      ) |>
+      dplyr::filter(
+        !is.na(contextual_group),
+        is.finite(annual_io_ratio)
+      )
+
+    test_result <- stats::kruskal.test(
+      annual_io_ratio ~ contextual_group,
+      data = test_data
+    )
+
+    tibble::tibble(
+      variable = sub("_group$", "", variable_name),
+      method = "Kruskal-Wallis",
+      schools = nrow(test_data),
+      groups = dplyr::n_distinct(test_data$contextual_group),
+      statistic = unname(test_result$statistic),
+      p_value = test_result$p.value
+    )
+  }
+)
+
+context_association_results_2024 <- dplyr::bind_rows(
+  context_numeric_results_2024,
+  context_categorical_results_2024
+) |>
+  dplyr::mutate(
+    adjusted_p = stats::p.adjust(
+      p_value,
+      method = "BH"
+    )
+  )
+
+context_association_results_2024
+
 ```
 
