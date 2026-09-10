@@ -35,7 +35,6 @@ SAMHE_core_files/term_nh_dates/
 issues running SAMHE data files .rtfd/
 
 # Generated figures
-figures/
 SAMHE_core_files/*.png
 
 # Contextual mapping raw and processed data
@@ -54,3 +53,14 @@ contextual_mapping/woodburning_mapping/
 *.gpkg
 *.geojson
 *.zip
+
+# Ignore interactive plot support files
+contextual_mapping/ammonia_mapping/figures/**/*.js
+contextual_mapping/ammonia_mapping/figures/**/*.css
+contextual_mapping/ammonia_mapping/figures/**/*_files/
+# Ignore interactive figure support files
+contextual_mapping/ammonia_mapping/figures/**/*.js
+contextual_mapping/ammonia_mapping/figures/**/*.css
+contextual_mapping/ammonia_mapping/figures/**/*_files/
+*.js
+*.css
