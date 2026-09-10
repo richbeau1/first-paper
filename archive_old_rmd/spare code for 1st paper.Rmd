@@ -1,0 +1,238 @@
+---
+title: "spare code for 1st paper"
+output: html_document
+date: "2026-03-23"
+---
+
+```{r}
+# This is a spare code chunk for the first paper, showing how to create a map of SAMHE schools and their paired AURN sites, with lines connecting them and colored by distance.
+
+pacman::p_load(dplyr, sf, ggplot2, rnaturalearth, viridis)
+
+# ---- 1. Prepare pairing table ----
+pairs <- In_Out_24 %>%
+  distinct(SchoolId_short, site, .keep_all = TRUE) %>%
+  select(
+    SchoolId_short,
+    SAMHE_lon = SchoolLongitude,
+    SAMHE_lat = SchoolLatitude,
+    AURN_site = site,
+    AURN_lon  = longitude,
+    AURN_lat  = latitude,
+    distance_km = km_distance_to_AURN
+  ) %>%
+  filter(!is.na(SAMHE_lat), !is.na(AURN_lat))
+
+# ---- 2. Descriptive statistics label ----
+dist_stats <- pairs %>%
+  summarise(
+    n_schools = n_distinct(SchoolId_short),
+    mean_km   = mean(distance_km, na.rm = TRUE),
+    median_km = median(distance_km, na.rm = TRUE),
+    min_km    = min(distance_km, na.rm = TRUE),
+    max_km    = max(distance_km, na.rm = TRUE)
+  )
+
+stats_label <- paste0(
+  "n = ", dist_stats$n_schools, "\n",
+  "Mean = ", round(dist_stats$mean_km, 1), " km\n",
+  "Median = ", round(dist_stats$median_km, 1), " km\n",
+  "Range = ", round(dist_stats$min_km, 1), "–", round(dist_stats$max_km, 0), " km"
+)
+
+# ---- 3. Convert to sf objects ----
+samhe_sf <- st_as_sf(pairs,
+                     coords = c("SAMHE_lon","SAMHE_lat"),
+                     crs = 4326, remove = FALSE)
+
+aurn_sf  <- st_as_sf(pairs,
+                     coords = c("AURN_lon","AURN_lat"),
+                     crs = 4326, remove = FALSE)
+
+lines_sf <- st_as_sf(
+  pairs %>%
+    rowwise() %>%
+    mutate(geometry = st_sfc(
+      st_linestring(matrix(c(SAMHE_lon, SAMHE_lat,
+                             AURN_lon,  AURN_lat),
+                           ncol = 2, byrow = TRUE)),
+      crs = 4326)) %>%
+    ungroup(),
+  crs = 4326
+)
+
+# ---- 4. UK basemap ----
+uk <- rnaturalearth::ne_states(country = "United Kingdom",
+                               returnclass = "sf")
+
+# ---- 5. Plot ----
+ggplot() +
+  geom_sf(data = uk,
+          fill = "white",
+          colour = "grey40",
+          linewidth = 0.3) +
+  geom_sf(data = lines_sf,
+          aes(color = distance_km),
+          linewidth = 0.25,
+          alpha = 0.6) +
+  geom_sf(data = aurn_sf,
+          aes(fill = distance_km),
+          shape = 21,
+          colour = "black",
+          size = 2.2,
+          stroke = 0.3) +
+  geom_sf(data = samhe_sf,
+          aes(shape = "SAMHE site"),
+          colour = "red",
+          size = 1.2) +
+  coord_sf(xlim = c(-8.5, 2.5),
+           ylim = c(49.5, 60.9),
+           clip = "off") +
+  scale_shape_manual(name = "Site type",
+                     values = c("SAMHE site" = 16)) +
+  scale_color_viridis_c(name = "Distance to AURN (km)") +
+  scale_fill_viridis_c(name = "Distance to AURN (km)") +
+  guides(
+    shape = guide_legend(order = 1),
+    color = guide_colorbar(order = 2),
+    fill  = guide_colorbar(order = 2)
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(size = 11),
+    legend.text  = element_text(size = 11),
+    plot.margin = margin(5.5, 80, 5.5, 5.5)
+  ) +
+  annotate("text",
+           x = 2.7,
+           y = 52.5,
+           label = stats_label,
+           hjust = 0,
+           vjust = 1,
+           size = 3.5)
+```
+
+```{r}
+daily <- In_Out_24 %>%
+  mutate(date = as.Date(DateTime)) %>%
+  group_by(date) %>%
+  summarise(
+    Indoor_mean   = mean(pm02, na.rm = TRUE),
+    Indoor_q25    = quantile(pm02, 0.25, na.rm = TRUE),
+    Indoor_q75    = quantile(pm02, 0.75, na.rm = TRUE),
+    Outdoor_mean  = mean(pm2.5, na.rm = TRUE),
+    Outdoor_q25   = quantile(pm2.5, 0.25, na.rm = TRUE),
+    Outdoor_q75   = quantile(pm2.5, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -date,
+    names_to = c("site", ".value"),
+    names_pattern = "(Indoor|Outdoor)_(mean|q25|q75)"
+  )
+
+wide_daily <- daily %>%
+  select(date, site, mean) %>%
+  pivot_wider(names_from = site, values_from = mean) %>%
+  drop_na(Indoor, Outdoor)
+
+r <- cor(wide_daily$Indoor, wide_daily$Outdoor, method = "pearson")
+r2 <- r^2
+p <- cor.test(wide_daily$Indoor, wide_daily$Outdoor, method = "pearson")$p.value
+
+modStats(
+  wide_daily,
+  mod = "Indoor",
+  obs = "Outdoor"
+)
+
+ggplot(daily, aes(x = date, y = mean, colour = site, fill = site)) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 0.25) +
+  scale_colour_manual(
+    values = c(Outdoor = "#E57200", Indoor = "#7A1FA2"),
+    labels = c(Outdoor = "Outdoor (DEFRA)", Indoor = "Indoor (SAMHE)")
+  ) +
+  scale_fill_manual(
+    values = c(Outdoor = "#E57200", Indoor = "#7A1FA2"),
+    labels = c(Outdoor = "Outdoor (DEFRA)", Indoor = "Indoor (SAMHE)")
+  ) +
+  labs(
+    x = "Date",
+    y = expression("Daily mean PM"[2.5]),
+    colour = NULL, fill = NULL
+  ) +
+  annotate(
+    "text",
+    x = min(daily$date) +30,
+    y = max(daily$mean),
+    label = paste0("R² = ", round(r2, 2), ", p < 0.001"),
+    hjust = 0,
+    vjust = 1,
+    size = 5
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "top"
+    #aspect.ratio = 0.25
+  ) +
+  scale_x_date(
+    date_breaks = "3 months",
+    date_labels = "%b '%y",
+    expand = c(0, 0)
+  )
+  ggsave("plot.png", width = 24, height = 4, dpi = 300)
+```
+
+
+
+```{r}
+
+
+# This is a spare code chunk for the first paper, showing how to create a scatter plot of annual mean indoor vs outdoor PM2.5 across schools, with a regression line and correlation statistics.
+# ---- 1. Prepare annual means ----
+df_annual <- In_Out_24 %>%
+  mutate(Year = as.integer(format(DateTime, "%Y"))) %>%
+  filter(Year %in% 2023:2025) %>% 
+  group_by(SchoolId_short) %>%
+  summarise(
+    indoor_pm25  = mean(pm02, na.rm = TRUE), #
+    outdoor_pm25 = mean(pm2.5, na.rm = TRUE), 
+    .groups = "drop" 
+  ) %>% 
+  filter(!is.na(indoor_pm25), !is.na(outdoor_pm25)) 
+
+# ---- 2. Correlation + regression ----
+cor_val <- cor(df_annual$outdoor_pm25,
+               df_annual$indoor_pm25,
+               method = "pearson",
+               use = "complete.obs")
+
+lm_fit <- lm(indoor_pm25 ~ outdoor_pm25, data = df_annual)
+
+stats_label <- paste0(
+  "n = ", nrow(df_annual), "\n",
+  "r = ", round(cor_val, 2), "\n",
+  "R² = ", round(summary(lm_fit)$r.squared, 2), "\n",
+  "Indoor = ",
+  round(coef(lm_fit)[1], 2), " + ",
+  round(coef(lm_fit)[2], 2), " × Outdoor"
+)
+
+# ---- 3. Plot ----
+scatterPlot(
+  df_annual,
+  x = "outdoor_pm25",
+  y = "indoor_pm25",
+  linear = TRUE,
+  cor = TRUE,
+  cex = 0.5,
+  xlim = c(0, 15),
+  ylim = c(0, 15),
+  main = "Indoor vs Outdoor PM2.5 (2023:2025 annual means)"
+)
+```
+

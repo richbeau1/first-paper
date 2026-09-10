@@ -1,13 +1,19 @@
-```{r}
+```{r setup}
 ## 1. Open and inspect the EMEP4UK 2024 file
 
-
 library(terra)
-library(ncdf4) 
-library(rstudioapi)
+library(ncdf4)
 
 # Find the folder containing this R Markdown file
-rmd_path <- getActiveDocumentContext()$path 
+rmd_path <- if (rstudioapi::isAvailable()) {
+  rstudioapi::getActiveDocumentContext()$path
+} else {
+  ""
+}
+
+if (!nzchar(rmd_path) && requireNamespace("knitr", quietly = TRUE)) {
+  rmd_path <- knitr::current_input(dir = TRUE)
+}
 
 if (!nzchar(rmd_path)) {
   stop(
@@ -15,7 +21,14 @@ if (!nzchar(rmd_path)) {
   )
 }
 
-analysis_dir <- dirname(rmd_path) # Get the directory of the R Markdown file
+analysis_dir <- dirname(rmd_path)
+processed_dir <- file.path(analysis_dir, "processed_data")
+figures_dir <- file.path(analysis_dir, "figures")
+
+dir.create(processed_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+
+set.seed(2024)
 
 # Location of the downloaded NetCDF file
 emep_file <- file.path(
@@ -35,8 +48,7 @@ cat(
 
 # Limit terra's memory use and create a temporary working folder
 terra_temp <- file.path(
-  analysis_dir,
-  "processed_data",
+  processed_dir,
   "terra_temp"
 )
 
@@ -125,7 +137,7 @@ plot(
 )
 ```
 
-```{r}
+```{r aurn-sites}
 ## 2. Select AURN background locations for PM2.5 validation
 
 background_types <- c(
@@ -187,7 +199,8 @@ plot(
 )
 ```
 
-```{r}
+```{r aurn-emep-extraction}
+
 ## 3. Extract daily EMEP4UK values at AURN locations
 
 pm25_at_aurn <- terra::extract(
@@ -229,11 +242,7 @@ aurn_emep_2024 <- tidyr::expand_grid(
 
 saveRDS(
   aurn_emep_2024,
-  file.path(
-    analysis_dir,
-    "processed_data",
-    "aurn_emep_2024.rds"
-  )
+  file.path(processed_dir, "aurn_emep_2024.rds")
 )
 
 cat(
@@ -245,7 +254,7 @@ cat(
   "\n"
 )
 ```
-```{r}
+```{r aurn-import}
 ## 4. Import measured AURN PM2.5 and calculate daily means
 
 aurn_hourly_2024 <- openair::importAURN(
@@ -293,11 +302,7 @@ aurn_daily_2024 <- openair::timeAverage(
 
 saveRDS(
   aurn_daily_2024,
-  file.path(
-    analysis_dir,
-    "processed_data",
-    "aurn_daily_pm25_2024.rds"
-  )
+  file.path(processed_dir, "aurn_daily_pm25_2024.rds")
 )
 
 cat(
@@ -311,7 +316,7 @@ cat(
 )
 ```
 
-```{r}
+```{r aurn-validation}
 ## 5. Match AURN observations with EMEP4UK and calculate annual means
 
 duplicate_aurn_keys <- sum(
@@ -396,11 +401,7 @@ validation_output_2024 <- list(
 
 saveRDS(
   validation_output_2024,
-  file.path(
-    analysis_dir,
-    "processed_data",
-    "aurn_emep_validation_2024.rds"
-  )
+  file.path(processed_dir, "aurn_emep_validation_2024.rds")
 )
 
 cat(
@@ -417,7 +418,7 @@ cat(
 print(annual_validation_stats_2024)
 ```
 
-```{r}
+```{r aurn-validation-plot}
 ## 6. Plot annual EMEP4UK validation against AURN observations
 
 annual_validation_plot_2024 <- openair::scatterPlot(
@@ -431,163 +432,17 @@ annual_validation_plot_2024 <- openair::scatterPlot(
   xlab = "AURN observed annual mean PM2.5 (µg/m³)",
   ylab = "EMEP4UK modelled annual mean PM2.5 (µg/m³)",
   title = "Annual mean PM2.5: EMEP4UK and AURN",
-  subtitle = "77 background monitoring locations, 2024"
+  subtitle = paste(
+    nrow(aurn_emep_annual_2024),
+    "background monitoring locations, 2024"
+  )
 )
 
 annual_validation_plot_2024
 ```
 
-```{r}
-## 7. Extract annual EMEP4UK concentrations at SAMHE schools
-
-# Load the school metadata only if it is not already available
-if (!exists("df_school_chars")) {
-  
-  project_dir <- dirname(dirname(analysis_dir))
-  
-  core_files <- c(
-    file.path(project_dir, "analysis_core_objects.RData"),
-    file.path(
-      project_dir,
-      "SAMHE_core_files",
-      "analysis_core_objects.RData"
-    )
-  )
-  
-  core_files <- core_files[file.exists(core_files)]
-  
-  if (length(core_files) == 0) {
-    stop("analysis_core_objects.RData could not be found.")
-  }
-  
-  core_environment <- new.env()
-  load(core_files[1], envir = core_environment)
-  df_school_chars <- core_environment$df_school_chars
-  
-  rm(core_environment)
-  gc()
-}
-
-# Create one valid coordinate pair per school
-school_locations_2024 <- df_school_chars |>
-  dplyr::transmute(
-    SchoolId_short = as.character(SchoolId_short),
-    latitude = as.numeric(SchoolLatitude),
-    longitude = as.numeric(SchoolLongitude)
-  ) |>
-  dplyr::filter(
-    !is.na(SchoolId_short),
-    !is.na(latitude),
-    !is.na(longitude)
-  ) |>
-  dplyr::distinct()
-
-# Stop if a school has conflicting coordinates
-if (anyDuplicated(school_locations_2024$SchoolId_short)) {
-  stop("Some schools have more than one coordinate pair.")
-}
-
-# Convert school locations to the EMEP4UK coordinate system
-school_points_2024 <- terra::vect(
-  school_locations_2024,
-  geom = c("longitude", "latitude"),
-  crs = "EPSG:4326"
-) |>
-  terra::project(terra::crs(pm25_2024))
-
-# Location of the EMEP4UK NetCDF file
-nc_file <- file.path(
-  analysis_dir,
-  "raw_data",
-  "EMEP4UK_met2024_emis2023.nc"
-)
-
-if (!file.exists(nc_file)) {
-  stop("EMEP4UK NetCDF file could not be found.")
-}
-# EMEP4UK variables to extract
-emep_variables <- c(
-  emep_pm25_annual = "SURF_ug_PM25_rh50",
-  emep_sia_annual  = "SURF_ug_SIA",
-  emep_nh3_annual  = "SURF_ug_NH3",
-  emep_nh4_annual  = "SURF_ug_NH4_F",
-  emep_no3_annual  = "SURF_ug_NO3_F",
-  emep_so4_annual  = "SURF_ug_SO4"
-)
-
-# Extract the 366 daily values and calculate each annual mean
-extract_annual_mean <- function(variable) {
-  
-  message("Extracting ", variable)
-  
-  raster <- terra::rast(
-    nc_file,
-    subds = variable
-  )
-  
-  daily_values <- terra::extract(
-    raster,
-    school_points_2024,
-    ID = FALSE,
-    method = "simple"
-  )
-  
-  annual_mean <- rowMeans(
-    as.matrix(daily_values),
-    na.rm = TRUE
-  )
-  
-  annual_mean[is.nan(annual_mean)] <- NA_real_
-  annual_mean
-}
-
-annual_values_2024 <- lapply(
-  emep_variables,
-  extract_annual_mean
-)
-
-# Combine school locations and annual concentrations
-school_emep_annual_2024 <- dplyr::bind_cols(
-  school_locations_2024,
-  tibble::as_tibble(annual_values_2024)
-) |>
-  dplyr::mutate(
-    sia_percent_pm25_annual = dplyr::if_else(
-      emep_pm25_annual > 0,
-      100 * emep_sia_annual / emep_pm25_annual,
-      NA_real_
-    )
-  )
-
-saveRDS(
-  school_emep_annual_2024,
-  file.path(
-    analysis_dir,
-    "processed_data",
-    "school_emep_annual_2024.rds"
-  )
-)
-
-cat(
-  "Schools extracted:", nrow(school_emep_annual_2024),
-  "\nSchools with missing EMEP values:",
-  sum(!complete.cases(school_emep_annual_2024)),
-  "\nAnnual SIA percentage range:",
-  paste(
-    round(
-      range(
-        school_emep_annual_2024$sia_percent_pm25_annual,
-        na.rm = TRUE
-      ),
-      1
-    ),
-    collapse = " to "
-  ),
-  "%\n"
-)
-```
-```{r}
-## Replace the recent SAMHE processing with the original method
+```{r samhe-preparation}
+## 7. Load SAMHE data and prepare 2024 school summaries
 
 project_dir <- dirname(dirname(analysis_dir))
 
@@ -602,15 +457,53 @@ core_files <- c(
 
 core_files <- core_files[file.exists(core_files)]
 
-core_environment <- new.env()
+if (length(core_files) == 0) {
+  stop("analysis_core_objects.RData could not be found.")
+}
+
+core_environment <- new.env(parent = emptyenv())
 load(core_files[1], envir = core_environment)
+
+required_core_objects <- c("In_Out_24", "df_school_chars")
+missing_core_objects <- setdiff(
+  required_core_objects,
+  ls(core_environment)
+)
+
+if (length(missing_core_objects) > 0) {
+  stop(
+    "Missing core object(s): ",
+    paste(missing_core_objects, collapse = ", ")
+  )
+}
+
+required_in_out_columns <- c(
+  "SchoolId_short",
+  "DateTime",
+  "pm02",
+  "pm2.5"
+)
+
+missing_in_out_columns <- setdiff(
+  required_in_out_columns,
+  names(core_environment$In_Out_24)
+)
+
+if (length(missing_in_out_columns) > 0) {
+  stop(
+    "Missing In_Out_24 column(s): ",
+    paste(missing_in_out_columns, collapse = ", ")
+  )
+}
+
+df_school_chars <- core_environment$df_school_chars
 
 datetime_tz <- attr(
   core_environment$In_Out_24$DateTime,
   "tzone"
 )
 
-if (is.null(datetime_tz) || datetime_tz == "") {
+if (is.null(datetime_tz) || !nzchar(datetime_tz)) {
   datetime_tz <- "UTC"
 }
 
@@ -624,68 +517,64 @@ end_2024 <- as.POSIXct(
   tz = datetime_tz
 )
 
-# Only select 2024; apply no additional exclusions
+# Preserve the existing SAMHE exclusions; only restrict the period to 2024
 In_Out_24_2024 <- core_environment$In_Out_24[
   core_environment$In_Out_24$DateTime >= start_2024 &
     core_environment$In_Out_24$DateTime < end_2024,
-  c(
-    "SchoolId_short",
-    "DateTime",
-    "pm02",
-    "pm2.5"
-  )
+  required_in_out_columns
 ]
 
 rm(core_environment)
-gc()
+invisible(gc())
 
-# Original school-level summarisation method
+# Create one validated coordinate pair per school
+school_locations_2024 <- df_school_chars |>
+  dplyr::transmute(
+    SchoolId_short = as.character(SchoolId_short),
+    latitude = as.numeric(SchoolLatitude),
+    longitude = as.numeric(SchoolLongitude)
+  ) |>
+  dplyr::filter(
+    !is.na(SchoolId_short),
+    is.finite(latitude),
+    is.finite(longitude)
+  ) |>
+  dplyr::distinct()
+
+if (anyDuplicated(school_locations_2024$SchoolId_short)) {
+  stop("Some schools have more than one coordinate pair.")
+}
+
+mean_available <- function(x) {
+  if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+}
+
+# Retain the established SAMHE annual calculation
 samhe_annual_2024 <- In_Out_24_2024 |>
   dplyr::mutate(
     SchoolId_short = as.character(SchoolId_short)
   ) |>
   dplyr::group_by(SchoolId_short) |>
   dplyr::summarise(
-    indoor_pm25_mean = mean(pm02, na.rm = TRUE),
-    outdoor_pm25_mean = mean(`pm2.5`, na.rm = TRUE),
+    indoor_pm25_mean = mean_available(pm02),
+    outdoor_pm25_mean = mean_available(`pm2.5`),
     n_observations = dplyr::n(),
     n_days = dplyr::n_distinct(as.Date(DateTime)),
     .groups = "drop"
   )
 
-# Left join preserves every SAMHE school
-samhe_emep_2024 <- samhe_annual_2024 |>
-  dplyr::left_join(
-    school_emep_annual_2024 |>
-      dplyr::mutate(
-        SchoolId_short = as.character(SchoolId_short)
-      ),
-    by = "SchoolId_short"
+# Create one SAMHE/AURN value per school and observed day
+samhe_daily_2024 <- In_Out_24_2024 |>
+  dplyr::mutate(
+    SchoolId_short = as.character(SchoolId_short),
+    date = as.Date(DateTime)
+  ) |>
+  dplyr::group_by(SchoolId_short, date) |>
+  dplyr::summarise(
+    indoor_pm25 = mean_available(pm02),
+    aurn_pm25 = mean_available(`pm2.5`),
+    .groups = "drop"
   )
-
-saveRDS(
-  samhe_emep_2024,
-  file.path(
-    analysis_dir,
-    "processed_data",
-    "samhe_emep_2024.rds"
-  )
-)
-
-cat(
-  "SAMHE schools:", nrow(samhe_annual_2024),
-  "\nSchools matched to EMEP4UK:",
-  sum(!is.na(samhe_emep_2024$emep_sia_annual)),
-  "\nSchools without EMEP4UK:",
-  sum(is.na(samhe_emep_2024$emep_sia_annual)),
-  "\nObserved-day range:",
-  paste(range(samhe_annual_2024$n_days), collapse = " to "),
-  "\n"
-)
-```
-```{r}
-
-## 9. Prepare daily SAMHE and EMEP4UK fine-SIA data
 
 analysis_school_locations_2024 <- school_locations_2024 |>
   dplyr::semi_join(
@@ -700,22 +589,16 @@ analysis_school_points_2024 <- terra::vect(
 ) |>
   terra::project(terra::crs(pm25_2024))
 
-mean_available <- function(x) {
-  if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
-}
+cat(
+  "SAMHE schools:", nrow(samhe_annual_2024),
+  "\nObserved-day range:",
+  paste(range(samhe_annual_2024$n_days), collapse = " to "),
+  "\n"
+)
+```
 
-# Preserve the original SAMHE data and exclusions
-samhe_daily_2024 <- In_Out_24_2024 |>
-  dplyr::mutate(
-    SchoolId_short = as.character(SchoolId_short),
-    date = as.Date(DateTime)
-  ) |>
-  dplyr::group_by(SchoolId_short, date) |>
-  dplyr::summarise(
-    indoor_pm25 = mean_available(pm02),
-    aurn_pm25 = mean_available(`pm2.5`),
-    .groups = "drop"
-  )
+```{r school-emep-daily}
+## 8. Extract or load daily EMEP4UK components at SAMHE schools
 
 daily_variables_2024 <- c(
   emep_pm25 = "SURF_ug_PM25_rh50",
@@ -732,71 +615,108 @@ if (!all(daily_variables_2024 %in% available_variables)) {
 
 model_dates_2024 <- as.Date(terra::time(pm25_2024))
 
-extract_daily_variable <- function(variable) {
-
-  message("Extracting ", variable)
-
-  raster <- terra::rast(
-    emep_file,
-    subds = variable
-  )
-
-  if (!identical(
-    as.Date(terra::time(raster)),
-    model_dates_2024
-  )) {
-    stop("The EMEP4UK dates do not match for ", variable)
-  }
-
-  values <- terra::extract(
-    raster,
-    analysis_school_points_2024,
-    ID = FALSE
-  )
-
-  as.vector(t(as.matrix(values)))
-}
-
-daily_values_2024 <- lapply(
-  daily_variables_2024,
-  extract_daily_variable
+school_emep_daily_file <- file.path(
+  processed_dir,
+  "school_emep_daily_2024.rds"
 )
 
-school_emep_daily_2024 <- dplyr::bind_cols(
-  tidyr::expand_grid(
-    SchoolId_short =
-      analysis_school_locations_2024$SchoolId_short,
-    date = model_dates_2024
-  ),
-  tibble::as_tibble(daily_values_2024)
-) |>
+build_school_emep_daily <- function() {
+
+  extract_daily_variable <- function(variable) {
+
+    message("Extracting ", variable)
+
+    raster <- terra::rast(
+      emep_file,
+      subds = variable
+    )
+
+    if (!identical(
+      as.Date(terra::time(raster)),
+      model_dates_2024
+    )) {
+      stop("The EMEP4UK dates do not match for ", variable)
+    }
+
+    values <- terra::extract(
+      raster,
+      analysis_school_points_2024,
+      ID = FALSE
+    )
+
+    as.vector(t(as.matrix(values)))
+  }
+
+  daily_values <- lapply(
+    daily_variables_2024,
+    extract_daily_variable
+  )
+
+  dplyr::bind_cols(
+    tidyr::expand_grid(
+      SchoolId_short =
+        analysis_school_locations_2024$SchoolId_short,
+      date = model_dates_2024
+    ),
+    tibble::as_tibble(daily_values)
+  )
+}
+
+rebuild_emep_cache <- TRUE
+
+if (file.exists(school_emep_daily_file)) {
+  cached_school_emep <- readRDS(school_emep_daily_file)
+
+  cache_columns_ok <- all(
+    c(
+      "SchoolId_short",
+      "date",
+      names(daily_variables_2024)
+    ) %in% names(cached_school_emep)
+  )
+
+  cache_dates_ok <- cache_columns_ok && identical(
+    sort(unique(as.Date(cached_school_emep$date))),
+    model_dates_2024
+  )
+
+  cache_schools_ok <- cache_columns_ok && setequal(
+    unique(as.character(cached_school_emep$SchoolId_short)),
+    analysis_school_locations_2024$SchoolId_short
+  )
+
+  if (cache_columns_ok && cache_dates_ok && cache_schools_ok) {
+    school_emep_daily_2024 <- cached_school_emep
+    rebuild_emep_cache <- FALSE
+    message("Loaded cached daily EMEP4UK school data.")
+  }
+
+  rm(cached_school_emep)
+}
+
+if (rebuild_emep_cache) {
+  school_emep_daily_2024 <- build_school_emep_daily()
+  saveRDS(school_emep_daily_2024, school_emep_daily_file)
+}
+
+# Recalculate derived components even when the extraction is loaded from cache
+school_emep_daily_2024 <- school_emep_daily_2024 |>
   dplyr::mutate(
-    # Fine SIA associated with ammonium salts
-    fine_sia =
-      emep_nh4 +
-      emep_no3_f +
-      emep_so4,
-
-    # EMEP4UK total SIA also contains coarse nitrate
-    reconstructed_total_sia =
-      fine_sia +
-      emep_no3_c,
-
+    SchoolId_short = as.character(SchoolId_short),
+    date = as.Date(date),
+    fine_sia = emep_nh4 + emep_no3_f + emep_so4,
+    reconstructed_total_sia = fine_sia + emep_no3_c,
     total_sia_closure = dplyr::if_else(
       emep_sia_total > 0,
       100 * reconstructed_total_sia / emep_sia_total,
       NA_real_
     ),
-
     fine_sia_percent_pm25 = dplyr::if_else(
       emep_pm25 > 0,
       100 * fine_sia / emep_pm25,
       NA_real_
     )
   )
-
-rm(daily_values_2024)
-gc()
 
 daily_fine_sia_2024 <- samhe_daily_2024 |>
   dplyr::inner_join(
@@ -816,26 +736,31 @@ school_coverage_2024 <- daily_fine_sia_2024 |>
     name = "complete_days"
   )
 
+saveRDS(
+  daily_fine_sia_2024,
+  file.path(processed_dir, "daily_fine_sia_2024.rds")
+)
+
 cat(
   "Complete school-days:", nrow(daily_fine_sia_2024),
   "\nSchools:",
-  dplyr::n_distinct(
-    daily_fine_sia_2024$SchoolId_short
-  ),
+  dplyr::n_distinct(daily_fine_sia_2024$SchoolId_short),
   "\nDuplicate school-dates:",
   sum(duplicated(
-    daily_fine_sia_2024[
-      c("SchoolId_short", "date")
-    ]
+    daily_fine_sia_2024[c("SchoolId_short", "date")]
   )),
   "\nSchools with at least 90 complete days:",
   sum(school_coverage_2024$complete_days >= 90),
   "\n"
 )
+
+# These large source objects are no longer needed downstream
+rm(In_Out_24_2024, samhe_daily_2024)
+invisible(gc())
 ```
 
-```{r}
-## Definitive annual analysis dataset
+```{r annual-primary}
+## 9. Create the definitive annual analysis dataset
 
 # Preserve the established ≥90 complete-day SAMHE cohort
 schools_90_days_2024 <- daily_fine_sia_2024 |>
@@ -843,13 +768,13 @@ schools_90_days_2024 <- daily_fine_sia_2024 |>
   dplyr::filter(complete_days >= 90)
 
 # Calculate annual EMEP4UK values from all 366 modelled days
-emep_annual_fine_2024 <- school_emep_components_daily_2024 |>
+emep_annual_fine_2024 <- school_emep_daily_2024 |>
   dplyr::group_by(SchoolId_short) |>
   dplyr::summarise(
     model_days = sum(
       complete.cases(
         emep_pm25,
-        emep_sia,
+        emep_sia_total,
         emep_nh4,
         emep_no3_f,
         emep_no3_c,
@@ -861,7 +786,7 @@ emep_annual_fine_2024 <- school_emep_components_daily_2024 |>
     nitrate_annual = mean(emep_no3_f, na.rm = TRUE),
     sulfate_annual = mean(emep_so4, na.rm = TRUE),
     ammonium_annual = mean(emep_nh4, na.rm = TRUE),
-    total_sia_annual = mean(emep_sia, na.rm = TRUE),
+    total_sia_annual = mean(emep_sia_total, na.rm = TRUE),
     reconstructed_sia_annual =
       mean(reconstructed_total_sia, na.rm = TRUE),
     .groups = "drop"
@@ -898,6 +823,7 @@ annual_primary_2024 <- schools_90_days_2024 |>
     by = "SchoolId_short"
   ) |>
   dplyr::filter(
+    model_days == length(model_dates_2024),
     complete.cases(
       indoor_pm25_mean,
       emep_pm25_annual,
@@ -928,12 +854,12 @@ annual_primary_summary_2024 <- annual_primary_2024 |>
 annual_primary_summary_2024
 saveRDS(
   annual_primary_2024,
-  file.path(analysis_dir, "processed_data", "annual_primary_2024.rds")
+  file.path(processed_dir, "annual_primary_2024.rds")
 )
 ```
 
-```{r}
-## Annual fine-SIA composition and indoor relationship
+```{r annual-relationship}
+## 10. Summarise annual fine-SIA composition and indoor relationship
 
 # Add complete-day coverage to the validated annual EMEP4UK values
 annual_fine_sia_all_2024 <- daily_fine_sia_2024 |>
@@ -1030,7 +956,8 @@ fine_sia_annual_plot_2024 <- openair::scatterPlot(
   ),
   title = "Annual fine SIA and indoor PM2.5 at SAMHE schools",
   subtitle = paste(
-    "262 schools with at least 90 complete matched days;",
+    nrow(annual_fine_sia_analysis_2024),
+    "schools with at least 90 complete matched days;",
     "EMEP4UK means use all 366 modelled days"
   )
 )
@@ -1040,8 +967,8 @@ annual_fine_sia_sensitivity_2024
 print(fine_sia_annual_plot_2024$plot)
 
 ```
-```{r}
-## Sensitivity analysis using school-observed days
+```{r observed-day-sensitivity}
+## 11. Test sensitivity to the model averaging period
 
 observed_day_emep_2024 <- daily_fine_sia_2024 |>
   dplyr::group_by(SchoolId_short) |>
@@ -1123,8 +1050,8 @@ observed_day_sensitivity_summary_2024
 
 
 
-```{r}
-## 11. Compare high fine-SIA days with other observed days
+```{r episode-analysis}
+## 12. Compare high fine-SIA days with other observed days
 
 fine_episode_daily_2024 <- daily_fine_sia_2024 |>
   dplyr::select(
@@ -1207,9 +1134,70 @@ episode_sensitivity_fine_2024 <-
 
 print(episode_sensitivity_fine_2024)
 ```
-
 ```{r}
-## 12. Plot changes on high fine-SIA days
+## Correlation between fine-SIA and indoor PM2.5 changes
+## during each school's highest 10% fine-SIA days
+
+episode_correlation_data_2024 <- fine_episode_school_2024 |>
+  dplyr::filter(
+    n_days >= 90,
+    is.finite(fine_sia_change),
+    is.finite(indoor_change)
+  ) |>
+  dplyr::distinct(SchoolId_short, .keep_all = TRUE)
+
+pearson_episode_2024 <- stats::cor.test(
+  episode_correlation_data_2024$fine_sia_change,
+  episode_correlation_data_2024$indoor_change,
+  method = "pearson"
+)
+
+spearman_episode_2024 <- stats::cor.test(
+  episode_correlation_data_2024$fine_sia_change,
+  episode_correlation_data_2024$indoor_change,
+  method = "spearman",
+  exact = FALSE
+)
+
+indoor_increase_test_2024 <- stats::wilcox.test(
+  episode_correlation_data_2024$indoor_change,
+  mu = 0,
+  alternative = "two.sided",
+  exact = FALSE
+)
+
+episode_statistics_2024 <- tibble::tibble(
+  schools = nrow(episode_correlation_data_2024),
+
+  median_fine_sia_change =
+    median(episode_correlation_data_2024$fine_sia_change),
+
+  median_indoor_change =
+    median(episode_correlation_data_2024$indoor_change),
+
+  pearson_r =
+    unname(pearson_episode_2024$estimate),
+
+  pearson_p =
+    pearson_episode_2024$p.value,
+
+  spearman_rho =
+    unname(spearman_episode_2024$estimate),
+
+  spearman_p =
+    spearman_episode_2024$p.value,
+
+  indoor_increase_wilcoxon_p =
+    indoor_increase_test_2024$p.value
+)
+
+print(episode_statistics_2024)
+```
+
+
+
+```{r episode-change-plot}
+## 13. Plot changes on high fine-SIA days
 
 fine_episode_plot_data_2024 <-
   fine_episode_school_2024 |>
@@ -1342,9 +1330,8 @@ fine_sia_episode_plot_2024 <-
 fine_sia_episode_plot_2024
 ```
 
-```{r}
-## 13. Map annual fine-SIA contribution at SAMHE schools
-## Map annual fine-SIA percentage at SAMHE schools
+```{r annual-percentage-map}
+## 14. Map annual secondary inorganic aerosol percentage at SAMHE schools
 
 fine_sia_map_data_2024 <- annual_primary_2024 |>
   dplyr::left_join(
@@ -1362,16 +1349,14 @@ fine_sia_map_data_2024 <- annual_primary_2024 |>
     is.finite(fine_sia_percent_annual)
   )
 
-uk_boundary <- sf::st_as_sf(
-  maps::map(
-    "world",
-    regions = c("UK", "Ireland"),
-    fill = TRUE,
-    plot = FALSE
-  )
-)
-
-sf::st_crs(uk_boundary) <- 4326
+uk_boundary <- maps::map(
+  "world",
+  regions = c("UK", "Ireland"),
+  fill = TRUE,
+  plot = FALSE
+) |>
+  sf::st_as_sf() |>
+  sf::st_transform(crs = 4326)
 
 fine_sia_school_points_2024 <- sf::st_as_sf(
   fine_sia_map_data_2024,
@@ -1400,43 +1385,57 @@ fine_sia_school_map_2024 <- ggplot2::ggplot() +
   ) +
   ggplot2::scale_fill_viridis_c(
     option = "C",
-    name = "Fine SIA\n(% of PM2.5)"
+    name = paste(
+      "% of inorganic aerosol",
+      "at school locations",
+      sep = "\n"
+    )
   ) +
   ggplot2::coord_sf(
     xlim = c(-8.5, 2),
     ylim = c(49.5, 61),
     expand = FALSE
   ) +
-  ggplot2::labs(
-    title =
-      "Annual modelled fine-SIA contribution at SAMHE schools",
-    subtitle = paste(
-      "Fine nitrate, sulfate and ammonium as a percentage",
-      "of annual mean modelled PM2.5, 2024"
-    ),
-    caption = paste(
-      nrow(fine_sia_map_data_2024),
-      "schools with at least 90 complete matched days;",
-      "EMEP4UK means use all 366 modelled days"
-    )
+ ggplot2::labs(
+  title = paste(
+    "Secondary inorganic aerosol as a percentage of annual mean
+     modelled outdoor PM2.5 at school locations, 2024",
+    sep = "\n"
+  ),
+
+  subtitle = paste(
+    "Modelled outdoor particulate ammonium, nitrate and sulfate\n",
+    "at 262 SAMHE school locations"
+  ),
+
+  caption = paste0(
+    nrow(fine_sia_map_data_2024),
+    " schools with at least 90 complete matched days.\n",
+    "Outdoor EMEP4UK values represent the 3-km grid cell ",
+    "containing each school; means use all 366 modelled days."
+  )
   ) +
   ggplot2::theme_void(base_size = 13) +
   ggplot2::theme(
     legend.position = "right",
-    plot.title = ggplot2::element_text(face = "bold")
+    plot.title = ggplot2::element_text(
+      face = "bold",
+      size = 15
+    ),
+    plot.subtitle = ggplot2::element_text(
+      size = 11
+    ),
+    plot.caption = ggplot2::element_text(
+      hjust = 0,
+      size = 9
+    )
   )
 
 fine_sia_school_map_2024
 
-dir.create(
-  file.path(analysis_dir, "figures"),
-  showWarnings = FALSE
-)
-
 ggplot2::ggsave(
   filename = file.path(
-    analysis_dir,
-    "figures",
+    figures_dir,
     "fine_sia_school_map_2024.png"
   ),
   plot = fine_sia_school_map_2024,
@@ -1447,8 +1446,8 @@ ggplot2::ggsave(
 )
 
 ```
-```{r}
-## 14. Map annual fine-SIA concentration at SAMHE schools
+```{r annual-concentration-map}
+## 15. Map annual fine-SIA concentration at SAMHE schools
 
 fine_sia_concentration_map_2024 <- ggplot2::ggplot() +
   ggplot2::geom_sf(
@@ -1477,7 +1476,7 @@ fine_sia_concentration_map_2024 <- ggplot2::ggplot() +
   ) +
   ggplot2::labs(
     title =
-      "Annual modelled fine-SIA concentration at SAMHE schools",
+      "Annual modelled fine-SIA concentration outside SAMHE schools",
 
     subtitle =
       "Annual mean EMEP4UK fine nitrate, sulfate and ammonium, 2024",
@@ -1498,8 +1497,7 @@ fine_sia_concentration_map_2024
 
 ggplot2::ggsave(
   filename = file.path(
-    analysis_dir,
-    "figures",
+    figures_dir,
     "fine_sia_concentration_map_2024.png"
   ),
   plot = fine_sia_concentration_map_2024,
@@ -1510,14 +1508,14 @@ ggplot2::ggsave(
 )
 ```
 
-```{r}
-## 15. Daily 2024 fine-SIA episode time series
+```{r daily-time-series}
+## 16. Plot the daily 2024 fine-SIA time series
 
 eligible_schools_2024 <- school_coverage_2024 |>
   dplyr::filter(complete_days >= 90) |>
   dplyr::select(SchoolId_short)
 
-# Modelled fine SIA uses the same fixed set of 262 schools every day
+# Modelled fine SIA uses the same fixed school set every day
 daily_model_series_2024 <- school_emep_daily_2024 |>
   dplyr::semi_join(
     eligible_schools_2024,
@@ -1604,7 +1602,8 @@ daily_episode_timeplot_2024 <- openair::timePlot(
   ylab = "Daily mean concentration (µg/m³)",
   title = "Daily fine SIA, outdoor and indoor PM2.5 during 2024",
   subtitle = paste(
-    "262 schools with at least 90 complete matched days;",
+    nrow(eligible_schools_2024),
+    "schools with at least 90 complete matched days;",
     "daily observed means use available schools"
   ),
   key.position = "bottom",
@@ -1614,8 +1613,8 @@ daily_episode_timeplot_2024 <- openair::timePlot(
 plot(daily_episode_timeplot_2024)
 ```
 
-```{r}
-## 16. Calendar plot of daily modelled fine SIA
+```{r fine-sia-calendar}
+## 17. Plot the daily modelled fine-SIA calendar
 
 fine_sia_calendar_2024 <- openair::calendarPlot(
   daily_model_series_2024,
@@ -1628,7 +1627,8 @@ fine_sia_calendar_2024 <- openair::calendarPlot(
   auto.text = FALSE,
   title = "Daily modelled fine SIA during 2024",
   subtitle = paste(
-    "Daily mean across the fixed set of 262",
+    "Daily mean across the fixed set of",
+    nrow(eligible_schools_2024),
     "SAMHE school locations"
   ),
   plot = FALSE
@@ -1638,7 +1638,276 @@ plot(fine_sia_calendar_2024)
 ```
 
 ```{r}
-## Map the 4–8 November fine-SIA episode and indoor response
+## 19. Map annual secondary inorganic aerosol and indoor PM2.5
+
+annual_sia_file_2024 <- file.path(
+  analysis_dir,
+  "processed_data",
+  "annual_fine_sia_mean_2024.tif"
+)
+
+dir.create(
+  dirname(annual_sia_file_2024),
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+# Create the annual modelled aerosol raster once, then reuse it
+if (file.exists(annual_sia_file_2024)) {
+
+  annual_fine_sia_raster_2024 <-
+    terra::rast(annual_sia_file_2024)
+
+} else {
+
+  read_annual_component_mean <- function(variable) {
+
+    raster <- terra::rast(
+      emep_file,
+      subds = variable
+    )
+
+    if (terra::nlyr(raster) != 366) {
+      stop(variable, " does not contain 366 daily layers.")
+    }
+
+    terra::app(
+      raster,
+      fun = mean,
+      na.rm = TRUE
+    )
+  }
+
+  annual_nh4_mean_2024 <-
+    read_annual_component_mean("SURF_ug_NH4_F")
+
+  annual_no3_mean_2024 <-
+    read_annual_component_mean("SURF_ug_NO3_F")
+
+  annual_so4_mean_2024 <-
+    read_annual_component_mean("SURF_ug_SO4")
+
+  annual_fine_sia_raster_2024 <-
+    annual_nh4_mean_2024 +
+    annual_no3_mean_2024 +
+    annual_so4_mean_2024
+
+  names(annual_fine_sia_raster_2024) <- "fine_sia"
+
+  terra::writeRaster(
+    annual_fine_sia_raster_2024,
+    annual_sia_file_2024,
+    overwrite = TRUE
+  )
+
+  rm(
+  annual_sia_file_2024,
+  annual_fine_sia_raster_2024,
+  uk_bbox,
+  annual_map_extent
+  )
+
+invisible(gc())
+}
+
+names(annual_fine_sia_raster_2024) <- "fine_sia"
+
+# UK boundary in the EMEP4UK coordinate system
+uk_annual_sf_2024 <- rnaturalearth::ne_countries(
+  country = "United Kingdom",
+  scale = "medium",
+  returnclass = "sf"
+) |>
+  sf::st_transform(
+    crs = terra::crs(annual_fine_sia_raster_2024)
+  )
+
+uk_bbox <- sf::st_bbox(uk_annual_sf_2024)
+
+annual_map_extent <- terra::ext(
+  uk_bbox["xmin"] - 50000,
+  uk_bbox["xmax"] + 50000,
+  uk_bbox["ymin"] - 50000,
+  uk_bbox["ymax"] + 50000
+)
+
+annual_fine_sia_map_df_2024 <-
+  annual_fine_sia_raster_2024 |>
+  terra::crop(annual_map_extent) |>
+  terra::as.data.frame(
+    xy = TRUE,
+    na.rm = TRUE
+  )
+
+# SAMHE analytical cohort
+annual_school_map_data_2024 <-
+  annual_fine_sia_analysis_2024 |>
+  dplyr::transmute(
+    SchoolId_short = as.character(SchoolId_short),
+    indoor_pm25_mean
+  ) |>
+  dplyr::inner_join(
+    analysis_school_locations_2024 |>
+      dplyr::transmute(
+        SchoolId_short = as.character(SchoolId_short),
+        longitude,
+        latitude
+      ) |>
+      dplyr::distinct(
+        SchoolId_short,
+        .keep_all = TRUE
+      ),
+    by = "SchoolId_short"
+  ) |>
+  dplyr::filter(
+    is.finite(longitude),
+    is.finite(latitude),
+    is.finite(indoor_pm25_mean)
+  )
+
+annual_school_points_sf_2024 <-
+  annual_school_map_data_2024 |>
+  sf::st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs = 4326
+  ) |>
+  sf::st_transform(
+    crs = terra::crs(annual_fine_sia_raster_2024)
+  )
+
+# Adjust these two values to change the school points
+school_dot_size <- 1.2
+school_border_thickness <- 0.5
+indoor_scale_limits <- c(
+  min(
+    annual_school_map_data_2024$indoor_pm25_mean,
+    na.rm = TRUE
+  ),
+  12
+)
+
+annual_fine_sia_indoor_map_2024 <- ggplot2::ggplot() +
+  ggplot2::geom_raster(
+    data = annual_fine_sia_map_df_2024,
+    ggplot2::aes(
+      x = x,
+      y = y,
+      fill = fine_sia
+    )
+  ) +
+  ggplot2::geom_sf(
+    data = uk_annual_sf_2024,
+    fill = NA,
+    colour = "grey35",
+    linewidth = 0.4
+  ) +
+  ggplot2::geom_sf(
+    data = annual_school_points_sf_2024,
+    colour = "white",
+    size = school_dot_size + school_border_thickness
+  ) +
+  ggplot2::geom_sf(
+    data = annual_school_points_sf_2024,
+    ggplot2::aes(colour = indoor_pm25_mean),
+    size = school_dot_size
+  ) +
+  ggplot2::scale_fill_viridis_c(
+    option = "D",
+    name = "Secondary inorganic\naerosol (µg/m³)"
+  ) +
+  
+ggplot2::scale_colour_viridis_c(
+  option = "C",
+  limits = indoor_scale_limits,
+  breaks = c(3, 6, 9, 12),
+  labels = c("3", "6", "9", "12"),
+  name = "SAMHE 2024 mean\nindoor PM2.5 (µg/m³)"
+ ) +
+  ggplot2::guides(
+    fill = ggplot2::guide_colourbar(order = 1),
+    colour = ggplot2::guide_colourbar(order = 2)
+  ) +
+  ggplot2::coord_sf(
+    crs = sf::st_crs(uk_annual_sf_2024),
+    expand = FALSE,
+    datum = NA
+  ) +
+  ggplot2::labs(
+    title = "2024: Mean outdoor Secondary PM2.5 and SAMHE PM2.5",
+    subtitle = paste0(
+      "Background: modelled particulate ammonium, nitrate and sulfate;\n",
+      "School colour shows mean indoor PM2.5"
+    ),
+    x = NULL,
+    y = NULL,
+    caption = paste0(
+      nrow(annual_school_map_data_2024),
+      " SAMHE schools with at least 90 complete matched days.\n",
+      "Modelled means use all 366 days; indoor means use available ",
+      "valid school-hour observations."
+    )
+  ) +
+  ggplot2::theme_void(base_size = 13) +
+  ggplot2::theme(
+    legend.position = "right",
+    plot.title = ggplot2::element_text(
+      face = "bold",
+      size = 18
+    ),
+    plot.subtitle = ggplot2::element_text(
+      size = 12,
+      lineheight = 1.1
+    ),
+    plot.caption = ggplot2::element_text(
+      hjust = 0,
+      size = 9,
+      margin = ggplot2::margin(t = 8)
+    ),
+    plot.margin = ggplot2::margin(
+      10, 20, 20, 20
+    )
+  )
+
+annual_fine_sia_indoor_map_2024
+
+dir.create(
+  file.path(analysis_dir, "figures"),
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+ggplot2::ggsave(
+  filename = file.path(
+    analysis_dir,
+    "figures",
+    "annual_secondary_aerosol_indoor_pm25_map_2024.png"
+  ),
+  plot = annual_fine_sia_indoor_map_2024,
+  width = 9,
+  height = 7.5,
+  dpi = 400,
+  bg = "white"
+)
+
+rm(
+  annual_sia_file_2024,
+  annual_fine_sia_raster_2024,
+  uk_annual_sf_2024,
+  uk_bbox,
+  annual_map_extent,
+  annual_fine_sia_map_df_2024,
+  annual_school_map_data_2024,
+  annual_school_points_sf_2024,
+  school_dot_size,
+  school_border_thickness
+)
+
+invisible(gc())
+```
+
+
+```{r november-episode-map}
+## 18. Map the 4–8 November fine-SIA episode and indoor response
 
 november_episode_dates <- seq(
   as.Date("2024-11-04"),
@@ -1650,7 +1919,7 @@ november_episode_dates <- seq(
 read_episode_component <- function(variable) {
 
   raster <- terra::rast(
-    nc_file,
+    emep_file,
     subds = variable
   )
 
@@ -1839,7 +2108,7 @@ cat(
   "µg/m³\n"
 )
 
-november_episode_map_2024
+november_episode_map_2024 # display the map
 
 rm(
   episode_nh4_2024,
@@ -1847,12 +2116,12 @@ rm(
   episode_so4_2024
 )
 
-invisible(gc())
+invisible(gc()) # force garbage collection to free memory
 ```
 
 
-```{r}
-## Annual modelled PM2.5 and fine-SIA contribution
+```{r annual-who-comparison}
+## 19. Compare annual modelled PM2.5 with the WHO guideline
 
 annual_ranked_2024 <- annual_primary_2024 |>
   dplyr::arrange(emep_pm25_annual) |>
@@ -1908,8 +2177,8 @@ annual_who_summary_2024
 annual_pm25_who_plot_2024
 ```
 
-```{r}
-## Hypothetical subtraction of annual fine SIA
+```{r annual-sia-subtraction}
+## 20. Illustrate hypothetical subtraction of annual fine SIA
 
 annual_sia_subtraction_2024 <- annual_primary_2024 |>
   dplyr::arrange(emep_pm25_annual) |>
@@ -1983,7 +2252,8 @@ annual_sia_subtraction_plot_2024 <- ggplot2::ggplot(
     x = "School locations ranked by annual mean PM2.5",
     y = "Annual mean concentration (µg/m³)",
     caption = paste(
-      "262 schools; all 366 modelled days.",
+      nrow(annual_sia_subtraction_2024),
+      "schools; all 366 modelled days.",
       "Vertical lines represent fine SIA.",
       "Component subtraction—not an emissions-control prediction."
     )
@@ -1996,8 +2266,8 @@ annual_sia_subtraction_plot_2024 <- ggplot2::ggplot(
 annual_sia_subtraction_summary_2024
 annual_sia_subtraction_plot_2024
 ```
-```{r}
-## Join contextual school variables
+```{r contextual-join}
+## 21. Join contextual school variables
 
 school_context_2024 <- df_school_chars |>
   dplyr::mutate(
@@ -2053,8 +2323,8 @@ annual_context_2024
 ```
 
 
-```{r}
-## Prepare annual contextual infiltration analysis
+```{r contextual-preparation}
+## 22. Prepare the annual contextual analysis
 
 annual_context_analysis_2024 <- annual_context_2024 |>
   dplyr::mutate(
@@ -2110,7 +2380,7 @@ contextual_coverage_2024
 
 ```{r contextual-association-tests}
 
-## Test associations with the annual indoor/outdoor PM2.5 ratio
+## 23. Test associations with the annual indoor/outdoor PM2.5 ratio
 
 context_test_data_2024 <- annual_context_analysis_2024 |>
   dplyr::mutate(
@@ -2235,3 +2505,72 @@ context_association_results_2024
 
 ```
 
+```{r save-and-clean, eval=FALSE}
+## 24. Save essential objects and remove intermediates
+
+# Optional: run this chunk manually after all previous chunks have completed.
+# It is not evaluated during knitting because it deliberately cleans GlobalEnv.
+essential_object_names_2024 <- c(
+  "analysis_dir",
+  "processed_dir",
+  "figures_dir",
+  "project_dir",
+  "emep_file",
+  "pm25_2024",
+  "sia_2024",
+  "df_school_chars",
+  "school_locations_2024",
+  "analysis_school_locations_2024",
+  "aurn_emep_annual_2024",
+  "annual_validation_stats_2024",
+  "samhe_annual_2024",
+  "school_emep_daily_2024",
+  "daily_fine_sia_2024",
+  "school_coverage_2024",
+  "annual_primary_2024",
+  "annual_primary_summary_2024",
+  "annual_fine_sia_sensitivity_2024",
+  "observed_day_sensitivity_summary_2024",
+  "fine_episode_school_2024",
+  "episode_sensitivity_fine_2024",
+  "annual_sia_subtraction_summary_2024",
+  "annual_context_analysis_2024",
+  "context_association_results_2024"
+)
+
+missing_essential_objects <- setdiff(
+  essential_object_names_2024,
+  ls(envir = .GlobalEnv)
+)
+
+if (length(missing_essential_objects) > 0) {
+  stop(
+    "Cannot clean the environment; missing essential object(s): ",
+    paste(missing_essential_objects, collapse = ", ")
+  )
+}
+
+save(
+  list = essential_object_names_2024,
+  file = file.path(
+    processed_dir,
+    "essential_analysis_objects_2024.RData" 
+  )
+)
+
+rm(
+  list = setdiff(
+    ls(envir = .GlobalEnv),
+    essential_object_names_2024
+  ),
+  envir = .GlobalEnv
+)
+
+invisible(gc())
+
+cat(
+  "Essential objects retained:",
+  length(ls(envir = .GlobalEnv)),
+  "\nCache saved to processed_data/essential_analysis_objects_2024.RData\n"
+)
+```
