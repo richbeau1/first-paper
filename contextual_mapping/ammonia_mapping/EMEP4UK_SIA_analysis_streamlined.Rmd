@@ -181,6 +181,33 @@ print(table(aurn_sites_2024$site_type))
 plot(
   sia_2024[[1]],
   main = paste(
+    "EMEP4UK modelled SIA with ",
+    "AURN background monitoring locations",
+    "1 January 2024",
+    sep = "\n"
+  ),
+  plg = list(title = "SIA (ug/m3)")
+)
+
+plot(
+  aurn_points_2024,
+  add = TRUE,
+  pch = 21,
+  bg = "#E57200",
+  col = "white",
+  cex = 0.8
+)
+
+png(
+  file.path(figures_dir, "EMEP4UK_SIA_AURN_validation_locations.png"),
+  width = 1800,
+  height = 1400,
+  res = 200
+)
+
+plot(
+  sia_2024[[1]],
+  main = paste(
     "EMEP4UK modelled SIA with selected",
     "AURN background monitoring locations",
     "1 January 2024",
@@ -197,6 +224,8 @@ plot(
   col = "white",
   cex = 0.8
 )
+
+dev.off() #  
 ```
 
 ```{r aurn-emep-extraction}
@@ -1483,7 +1512,7 @@ fine_sia_concentration_map_2024 <- ggplot2::ggplot() +
 
     caption = paste(
   nrow(fine_sia_map_data_2024),
-  "schools with at least 90 complete matched days;",
+  "Schools with at least 90 complete matched days;",
   "EMEP4UK means use all 366 modelled days"
 )
   ) +
